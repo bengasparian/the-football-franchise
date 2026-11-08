@@ -14,8 +14,26 @@ APP.reloadTeams = () => loadTeamsCache();
 
 setToastHandler((t, l) => toast(esc(t), l));
 
+// ---------------------------------------------------------------- freshness: never run yesterday's code
+// GitHub Pages lets browsers cache files for a while. On load we compare the site version with the one this browser
+// last ran; if it changed, every file is re-downloaded into the cache and the page reloads once.
+async function ensureFresh() {
+  try {
+    const v = await fetch('version.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null));
+    if (!v) return;
+    const seen = localStorage.getItem('tff-ver');
+    if (seen === v.v) return;
+    if (sessionStorage.getItem('tff-ver-try') === v.v) { localStorage.setItem('tff-ver', v.v); return; }
+    sessionStorage.setItem('tff-ver-try', v.v);
+    await Promise.all(v.files.map((f) => fetch(f, { cache: 'reload' }).catch(() => null)));
+    localStorage.setItem('tff-ver', v.v);
+    if (seen) { location.reload(); await new Promise(() => {}); } // first visit ever: nothing stale to replace
+  } catch { /* offline: keep going */ }
+}
+
 // ---------------------------------------------------------------- boot
 async function boot() {
+  await ensureFresh();
   document.body.innerHTML = `
   <div id="app" class="nolg">
     <header id="top"></header>
