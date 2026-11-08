@@ -1,5 +1,5 @@
 // App shell: router, header with sim controls, sidebar, start screen, settings, online.
-import { call, session, net, host, join, claim, onNet, sendChat, setReady, guestStatus, leaveOnline, setToastHandler, clearReady } from './client.js';
+import { call, session, net, host, join, claim, onNet, sendChat, setReady, guestStatus, leaveOnline, setToastHandler, clearReady, readyCounts } from './client.js';
 import { esc, $, $$, money, modal, closeModal, toast, busy, logo, setAccent, resetTheme, TABLES } from './ui.js';
 void $$;
 import { PAGES, ACTIONS as PA } from './pages.js';
@@ -121,9 +121,17 @@ export async function rerender() { const main = $('#main'); const sc = document.
 function simButtons(h) {
   const ph = h.phase;
   const host = net.mode !== 'guest';
-  if (!host) return `<button class="btn" data-act="toggleReady">${net.myReady ? '✓ Ready' : 'Mark ready'}</button>`;
+  const online = net.mode === 'host' && [...net.conns.values()].some((c) => c.tid != null);
+  const rc = readyCounts();
+  const readyBtn = `<button class="btn ${net.myReady ? 'ready-on' : ''}" ${!host ? 'id="advanceBtn"' : ''} data-act="toggleReady" title="When every GM in the room is ready, the league advances automatically">${net.myReady ? '✓ Ready' : 'Ready to Advance'} <span class="rc">${rc.ready}/${rc.total}</span></button>`;
+  if (!host) return readyBtn;
+  if (online) return `${readyBtn}${simButtonsHost(h, ph)}`;
+  return simButtonsHost(h, ph);
+}
+function simButtonsHost(h, ph) {
   const TIPS = { week: 'Simulate this week\'s games and move to the next week', phase: 'Move to the next phase of the NFL calendar', draftnext: 'Let CPU teams pick until you are on the clock' };
-  const B = (label, target, cls = '') => `<button class="btn ${cls}" ${cls.includes('pri') ? 'id="advanceBtn"' : ''} data-act="sim" data-target="${target}" title="${TIPS[target] || 'Simulate ahead'}">${label}</button>`;
+  const onlineHost = net.mode === 'host' && [...net.conns.values()].some((c) => c.tid != null);
+  const B = (label, target, cls = '') => `<button class="btn ${cls}" ${cls.includes('pri') && !onlineHost ? 'id="advanceBtn"' : ''} data-act="sim" data-target="${target}" title="${onlineHost && cls.includes('pri') ? 'Advance now without waiting for everyone (host only)' : TIPS[target] || 'Simulate ahead'}">${onlineHost && cls.includes('pri') ? label.replace(' ▶', '') + ' now' : label}</button>`;
   const more = (items) => `<select class="btn" data-change="simSelect" title="Simulate further ahead" style="padding-right:24px"><option value="">Sim ahead…</option>${items.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>`;
   switch (ph) {
     case 'REGULAR_SEASON': return `${B('Advance Week ▶', 'week', 'pri')}${more([['midseason', 'Sim to midseason (Week 9)'], ['deadline', `Sim to trade deadline (after Wk ${h.deadline})`], ['playoffs', 'Sim to playoffs'], ['seasonEnd', 'Sim to end of season'], ['nextSeason', 'Sim to next season']])}`;
@@ -236,9 +244,9 @@ const CORE = {
     if (r?.onClock) { toast('You are on the clock!', 'good'); location.hash = '#/draft'; }
   },
   async simSelect(el) { const v = el.value; el.value = ''; if (v) await CORE.sim({ dataset: { target: v } }); },
-  async faDay() { await act('faAdvanceDay', {}, { busyText: 'Agents are working the phones…' }); },
+  async faDay() { await act('faAdvanceDay', {}, { busyText: 'Agents are working the phones…' }); if (net.mode === 'host') clearReady(); },
   async switchTeam(el) { session.tid = +el.value; await render(); },
-  async toggleReady() { net.myReady = !net.myReady; setReady(net.myReady); drawTop(); },
+  async toggleReady() { setReady(!net.myReady); APP.topSig = null; drawTop(); },
 };
 
 // ---------------------------------------------------------------- start screen
@@ -346,15 +354,28 @@ async function renderOnline() {
     if (session.tid == null) {
       const teams = net.welcome?.teams || [];
       body = `<div class="card"><h2>Pick your team</h2><p class="muted">Connected to ${esc(net.welcome?.hostName || 'host')}'s room <b>${esc(net.code)}</b>.</p><div class="teamgrid">${teams.map((t) => `<div class="tpick ${t.taken ? '' : ''}" ${t.taken ? 'style="opacity:.35;pointer-events:none"' : `data-act="claimTeam" data-tid="${t.tid}"`}>${logo(t.logo)}<span>${esc(t.region)} <b>${esc(t.name)}</b>${t.taken ? ' (taken)' : ''}</span></div>`).join('')}</div></div>`;
-    } else body = `<div class="grid g21"><div class="card"><h2>Online</h2><p>You are connected to room <b>${esc(net.code)}</b> as the GM of <b>${esc(h?.team.region)} ${esc(h?.team.name)}</b>. The host advances the league; mark yourself ready when you're done with your moves.</p><div class="row"><a class="btn pri" href="#/home">Go to my front office</a><button class="btn danger" data-act="leaveOnline">Leave room</button></div></div><div class="card"><h2>Chat</h2>${chatBox()}</div></div>`;
+    } else body = `<div class="grid g21"><div class="card"><h2>Online</h2><p>You are connected to room <b>${esc(net.code)}</b> as the GM of <b>${esc(h?.team.region)} ${esc(h?.team.name)}</b>. When you're done with your moves, press <b>Ready to Advance</b> in the top bar. Once every GM in the room is ready, the league advances automatically.</p><div class="row"><a class="btn pri" href="#/home">Go to my front office</a><button class="btn danger" data-act="leaveOnline">Leave room</button></div></div><div class="card"><h2>Chat</h2>${chatBox()}</div></div>`;
   }
   $('#main').innerHTML = `<div class="page-h"><h1>Play Online</h1><span class="sub">Room-code multiplayer</span></div>${body}`;
   const c = $('#chatLog'); if (c) c.scrollTop = c.scrollHeight;
 }
 function chatBox() { return `<div class="chat" id="chatLog">${net.chat.map((m) => `<div><b class="${m.from === 'system' ? 'muted' : ''}">${esc(m.from)}:</b> ${esc(m.text)}</div>`).join('')}</div><div class="row" style="margin-top:8px"><input type="text" id="chatIn" placeholder="Message" style="flex:1" onkeydown="if(event.key==='Enter'){document.querySelector('[data-act=chatSend]').click()}"><button class="btn" data-act="chatSend">Send</button></div>`; }
+// Host only: everyone pressed Ready, so advance whatever the current step is.
+async function advanceForEveryone() {
+  const h = APP.header;
+  if (!h || net.mode !== 'host' || APP.autoAdv) return;
+  APP.autoAdv = true;
+  try {
+    toast('Everyone is ready: advancing the league…', 'good');
+    if (h.phase === 'FREE_AGENCY' && (h.faDay ?? 0) < 5) await CORE.faDay();
+    else if (h.phase === 'DRAFT') await act('draftSim', { all: false }, { busyText: 'Picks are coming in…' });
+    else await CORE.sim({ dataset: { target: ['REGULAR_SEASON', 'PRESEASON', 'PLAYOFFS'].includes(h.phase) ? 'week' : 'phase' } });
+  } finally { clearReady(); APP.autoAdv = false; APP.topSig = null; drawTop(); }
+}
 function netEvent(ev) {
+  if (ev.t === 'allReady') { advanceForEveryone(); return; }
   if (ev.t === 'update') { if (APP.route !== 'online') rerender(); else refreshHeader(); }
-  if (ev.t === 'status' || ev.t === 'chat' || ev.t === 'claimed') { if (APP.route === 'online') renderOnline(); else drawTop(); }
+  if (ev.t === 'status' || ev.t === 'chat' || ev.t === 'claimed') { APP.topSig = null; if (APP.route === 'online') renderOnline(); else drawTop(); }
   if (ev.t === 'claimed') { if (ev.error) toast(esc(ev.error), 'error'); else { toast('Team claimed! Welcome to the front office.', 'good'); loadTeamsCache().then(() => { location.hash = '#/home'; }); } }
   if (ev.t === 'welcome') { net.welcome = ev; }
   if (ev.t === 'error') toast(esc(ev.text), 'error');

@@ -1,7 +1,7 @@
 // Transport between the UI and the league engine.
 // Local / host: talks to the Web Worker.  Online guest: talks to the host over WebRTC (PeerJS room code).
 const W = { worker: null, seq: 0, pending: new Map(), onToast: null };
-export const net = { mode: 'local', peer: null, conns: new Map(), hostConn: null, code: null, myTid: null, name: 'GM', listeners: new Set(), ready: new Map(), chat: [], guestTid: null };
+export const net = { mode: 'local', peer: null, conns: new Map(), hostConn: null, code: null, myTid: null, name: 'GM', listeners: new Set(), ready: new Map(), chat: [], guestTid: null, hostReady: false, myReady: false, status: null };
 
 function ensureWorker() {
   if (W.worker) return;
@@ -112,11 +112,28 @@ async function hostHandle(conn, msg) {
     } catch (e) { conn.send({ t: 'res', id: msg.id, error: e.message }); }
     return;
   }
-  if (msg.t === 'ready') { net.ready.set(conn.peer, !!msg.v); emit({ t: 'status' }); broadcastStatus(); return; }
+  if (msg.t === 'ready') { net.ready.set(conn.peer, !!msg.v); emit({ t: 'status' }); broadcastStatus(); checkAllReady(); return; }
   if (msg.t === 'chat') { addChat(me.name, String(msg.text).slice(0, 300)); }
 }
 function broadcast(msg, except = null) { for (const [id, c] of net.conns) if (id !== except) try { c.conn.send(msg); } catch { /* ignore */ } }
-function broadcastStatus() { broadcast({ t: 'status', ready: [...net.conns.values()].map((c) => ({ name: c.name, abbr: c.abbr, ready: !!net.ready.get(c.conn.peer) })) }); }
+function broadcastStatus() { broadcast({ t: 'status', host: { name: net.name, ready: net.hostReady }, ready: [...net.conns.values()].map((c) => ({ name: c.name, abbr: c.abbr, tid: c.tid, ready: !!net.ready.get(c.conn.peer) })) }); }
+// Everyone who runs a team (the host plus every guest who picked a team) must be ready before the league advances.
+export function readyCounts() {
+  if (net.mode === 'host') {
+    const gms = [...net.conns.values()].filter((c) => c.tid != null);
+    return { ready: (net.hostReady ? 1 : 0) + gms.filter((c) => net.ready.get(c.conn.peer)).length, total: 1 + gms.length };
+  }
+  if (net.mode === 'guest' && net.status) {
+    const gms = (net.status.ready || []).filter((c) => c.tid != null);
+    return { ready: (net.status.host?.ready ? 1 : 0) + gms.filter((c) => c.ready).length, total: 1 + gms.length };
+  }
+  return { ready: 0, total: 1 };
+}
+function checkAllReady() {
+  if (net.mode !== 'host') return;
+  const c = readyCounts();
+  if (c.total >= 2 && c.ready >= c.total) emit({ t: 'allReady' });
+}
 function addChat(from, text) {
   const m = { from, text, at: Date.now() };
   net.chat.push(m); if (net.chat.length > 100) net.chat.shift();
@@ -128,9 +145,13 @@ export function sendChat(text) {
   if (net.mode === 'host') addChat(net.name, text);
   else if (net.mode === 'guest') net.hostConn?.send({ t: 'chat', text });
 }
-export function setReady(v) { if (net.mode === 'guest') net.hostConn?.send({ t: 'ready', v }); }
+export function setReady(v) {
+  net.myReady = !!v;
+  if (net.mode === 'guest') net.hostConn?.send({ t: 'ready', v });
+  if (net.mode === 'host') { net.hostReady = !!v; broadcastStatus(); emit({ t: 'status' }); checkAllReady(); }
+}
 export function guestStatus() { return [...net.conns.values()].map((c) => ({ name: c.name, abbr: c.abbr, tid: c.tid, ready: !!net.ready.get(c.conn.peer) })); }
-export function clearReady() { net.ready.clear(); broadcastStatus(); }
+export function clearReady() { net.ready.clear(); net.hostReady = false; net.myReady = false; broadcast({ t: 'readyReset' }); broadcastStatus(); emit({ t: 'status' }); }
 
 let gseq = 0;
 const gpending = new Map();
@@ -149,6 +170,8 @@ export async function join(code, name) {
         if (msg.t === 'res') { const p = gpending.get(msg.id); if (p) { gpending.delete(msg.id); msg.error ? p.reject(new Error(msg.error)) : p.resolve(msg.result); } return; }
         if (msg.t === 'claimed') { if (!msg.error) { net.guestTid = msg.tid; session.tid = msg.tid; } emit(msg); return; }
         if (msg.t === 'chat') { net.chat.push(msg); emit(msg); return; }
+        if (msg.t === 'status') { net.status = msg; }
+        if (msg.t === 'readyReset') { net.myReady = false; emit({ t: 'status' }); return; }
         emit(msg);
       });
       conn.on('close', () => { emit({ t: 'disconnected' }); net.mode = 'local'; });
