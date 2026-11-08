@@ -67,11 +67,20 @@ ${bd}
   return uri;
 }
 export const hs = (url, cls = '', p = null) => {
-  const src = url || (p && (p.pid || p.name) ? faceSvg(p.pid || p.name, p.tc || '#1e3a8a') : SIL);
+  const src = url ? smallImg(url, cls === 'lg' ? 240 : cls === 'md' ? 120 : 72) : (p && (p.pid || p.name) ? faceSvg(p.pid || p.name, p.tc || '#1e3a8a') : SIL);
   const fb = p && (p.pid || p.name) ? faceSvg(p.pid || p.name, p.tc || '#1e3a8a') : SIL;
   return `<img class="hs ${cls}" loading="lazy" decoding="async" src="${esc(src)}" onerror="this.onerror=null;this.src='${fb}'" alt="">`;
 };
-export const logo = (url, cls = '') => (url ? `<img class="logo ${cls}" loading="lazy" src="${esc(url)}" alt="" onerror="this.style.visibility='hidden'">` : '');
+// Team logos come as 500px PNGs; ask the CDN for a small version (much faster to download and decode).
+const LOGO_PX = { sm: 40, '': 48, md: 80, lg: 144, xl: 192 };
+export function smallImg(url, px) {
+  if (!url) return url;
+  const m = /^https:\/\/a\.espncdn\.com(\/i\/teamlogos\/[^?]+\.png)$/.exec(url);
+  if (m) return `https://a.espncdn.com/combiner/i?img=${m[1]}&h=${px}&w=${px}`;
+  if (url.includes('static.www.nfl.com/image/upload/')) return url.replace('/image/upload/f_auto,q_auto/', `/image/upload/f_auto,q_auto,w_${px},h_${px},c_thumb,g_face/`);
+  return url;
+}
+export const logo = (url, cls = '') => (url ? `<img class="logo ${cls}" decoding="async" src="${esc(smallImg(url, LOGO_PX[cls] || 48))}" alt="" onerror="if(!this.dataset.f){this.dataset.f=1;this.src='${esc(url)}'}else{this.style.visibility='hidden'}">` : '');
 export function pname(p, { link = true, sub = null, img = true } = {}) {
   const n = esc(p.name || `${p.fn} ${p.ln}`);
   const s = sub ?? `${p.pos || ''}${p.team ? ' · ' + p.team : ''}`;

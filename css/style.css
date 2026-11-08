@@ -263,7 +263,7 @@ td.c, th.c { text-align: center; }
 /* ===================================================================== Madden-style v2 */
 #top { position: sticky; top: 0; }
 #nav { position: sticky; top: 64px; z-index: 18; }
-#main.loading { opacity: .55; transition: opacity .15s .12s; }
+#main.loading { opacity: .6; transition: opacity .12s .25s; }
 #main { animation: none; }
 #tip { position: fixed; z-index: 200; display: none; max-width: 300px; background: var(--bg2); color: #e9eefb; border: 1px solid var(--accent); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; line-height: 1.35; pointer-events: none; box-shadow: 0 6px 18px rgba(0,0,0,.5); }
 .logo.xl { width: 96px; height: 96px; }
@@ -422,3 +422,6 @@ input[type=color] { width: 100%; height: 34px; padding: 2px; background: var(--p
 .todo.urgent .chk { border-color: var(--accent); color: var(--accent); }
 .otc { background: linear-gradient(110deg, var(--team1-raw, #172554), var(--panel)); }
 ::-webkit-scrollbar-thumb { background: var(--line2); }
+
+/* rendering performance: skip work for off-screen cards and rows */
+.card, .gcard, .recap { content-visibility: auto; contain-intrinsic-size: auto 240px; }

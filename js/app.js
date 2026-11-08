@@ -51,7 +51,9 @@ export async function refreshHeader() {
   APP.header = h;
   if (h && session.tid == null) session.tid = h.tid;
   if (h && !h.userTids.includes(session.tid) && net.mode !== 'guest') session.tid = h.userTids[0] ?? 0;
-  drawTop(); drawSide();
+  // only rebuild the top bar when something in it changed (avoids re-loading the logo on every click)
+  const sig = JSON.stringify([h, session.tid, net.mode, net.code, net.myReady, net.conns?.size]);
+  if (sig !== APP.topSig) { APP.topSig = sig; drawTop(); } else drawNav();
   if (h) setAccent(h.team.c1, h.team.c2); else resetTheme();
   return h;
 }
@@ -75,12 +77,17 @@ export async function render() {
   const main = $('#main');
   const token = (APP.renderToken = (APP.renderToken || 0) + 1);
   const keep = main.dataset.keep === APP.route;
-  if (!keep) main.classList.add('loading');
+  const ckey = location.hash;
+  // show the last version of this screen instantly, then swap in fresh data a moment later
+  let shown = null;
+  if (!keep && APP.pageCache?.[ckey]) { shown = APP.pageCache[ckey]; main.innerHTML = shown; (document.scrollingElement || document.documentElement).scrollTop = 0; }
+  else if (!keep) main.classList.add('loading');
   try {
     const html = await page(params, h);
     if (token !== APP.renderToken) return; // a newer navigation already happened
     APP.hideTip?.();
-    if (html != null) main.innerHTML = html;
+    if (html != null && html !== shown) main.innerHTML = html;
+    if (html != null) { APP.pageCache ||= {}; APP.pageCache[ckey] = html; const ks = Object.keys(APP.pageCache); if (ks.length > 40) delete APP.pageCache[ks[0]]; }
     main.classList.remove('loading');
     const sc = document.scrollingElement || document.documentElement;
     if (keep) sc.scrollTop = +main.dataset.st || 0; else sc.scrollTop = 0;
@@ -184,6 +191,7 @@ async function onChange(e) {
   if (fn) { try { await fn(el, e); } catch (err) { toast(esc(err.message), 'error'); } }
 }
 export async function act(method, args, { msg = null, refresh = true, busyText = null } = {}) {
+  APP.pageCache = {}; // something is about to change: never flash stale screens afterwards
   if (busyText) busy(true, busyText);
   try {
     const r = await call(method, args);
