@@ -198,6 +198,11 @@ td.c, th.c { text-align: center; }
   .g2, .g21, .g12, .g3, .g4 { grid-template-columns: 1fr; }
   #main { padding: 14px 12px 60px; }
   #top .ctx .s, #top .brand span.full { display: none; }
-  .hero-team { flex-wrap: wrap; } .hero-team .stats { margin-left: 0; }
+  .hero-team { flex-wrap: wrap; padding: 14px; } .hero-team .stats { margin-left: 0; gap: 14px; } .hero-team h1 { font-size: 24px; } .hero-team .stats .v { font-size: 20px; } .hero-team .stats div { text-align: left; }
+  .hero-team .logo.lg { width: 48px; height: 48px; } .hs.lg { width: 72px; height: 72px; }
+  #top { gap: 8px; padding: 0 8px; } #top .brand { display: none; } #top .ctx .t { font-size: 15px; } #top .ctx img { display: none; }
+  #top .simbar select { display: none; } #top .simbar .btn { padding: 6px 8px; font-size: 12px; }
+  .page-h h1 { font-size: 24px; } .evt .row { flex-wrap: wrap; }
+  .tbl-wrap { font-size: 12.5px; } th, td { padding: 6px 7px; }
   .bracket { grid-template-columns: 1fr 1fr; }
 }

@@ -39,7 +39,7 @@ export function genDraftClass(s, n = 430) {
     p.r.potEst = clamp(p.r.pot + gauss(0, 5), 30, 99);
     p.r.ovrStart = p.r.ovr;
     // consensus media grade (imperfect): mixes current talent and upside, with noise
-    p.scout = { grade: p.r.tal * 0.65 + p.r.pot * 0.35 + gauss(0, 4.5) + (ps === 'QB' ? 1.5 : 0) - (['RB', 'K', 'P', 'LS', 'FB'].includes(ps) ? 2 : 0), lvl: {} };
+    p.scout = { grade: p.r.tal * 0.65 + p.r.pot * 0.35 + gauss(0, 4.5) + (ps === 'QB' ? 0.5 : 0) - ({ RB: 2, FB: 7, K: 11, P: 12, LS: 18 }[ps] || 0), lvl: {} };
     p.combine = combineFor(p);
     out.push(p);
     Lg.players[p.pid] = p;
