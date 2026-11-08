@@ -1,14 +1,17 @@
 // Create a new league from the real NFL data snapshot.
+import { TRADED_PICKS } from './const.js';
 import { G, seedRng, rnd, gauss, clamp, age, nextId, rngState, news, capFor } from './core.js';
 import { CAP_2026, RULES_DEFAULT, DEFAULT_SLIDERS, TEAM_INFO, OWNERS, NO_TAX } from './const.js';
-import { genAttrs, initTalent, computeOvr, projectPeak } from './ratings.js';
+import { genAttrs, initTalent, computeOvr, projectPeak, captureRefDist } from './ratings.js';
+import { initDevTraits, initLongevity, applyKnownPersonality } from './dev.js';
 import { genPersonality } from './personality.js';
 import { contractFromData, makeContract, minDeal, psDeal, rookieContract, marketValue, teamCap } from './contracts.js';
 import { initCoaches } from './coaches.js';
 import { autoDepth } from './roster.js';
 import { genDraftClass } from './draft.js';
 import { initFinances, setOwnerGoals } from './finance.js';
-import { generateSchedule } from './season.js';
+import { aiCutdown, fillToMax } from './ai.js';
+import { generateSchedule, ensurePreseasonGames } from './season.js';
 import { startFantasyDraft } from './fantasy.js';
 
 const REAL_KEYS = { pntyd: 'pntYd' };
@@ -73,6 +76,14 @@ export function createLeague(data, opts) {
   initCoaches(data.coaches, unit);
   for (const t of L.teams) initFinances(t);
   for (const s of [S0 + 1, S0 + 2, S0 + 3]) addSeasonPicks(s);
+  // real picks that have already been traded
+  for (const [ys, list] of Object.entries(TRADED_PICKS)) {
+    for (const [rd, from, to, cond] of list) {
+      const o = tidOf[from], n = tidOf[to];
+      const pk = L.picks.find((x) => x.s === +ys && x.rd === rd && x.orig === o && !x.comp);
+      if (pk && n != null) { pk.tid = n; if (cond) pk.cond = 'earlierOf:' + cond.split(':')[1].split(',').map((ab) => tidOf[ab]).join(','); }
+    }
+  }
 
   // ---- schedule & real results
   const real = start === 'current';
@@ -96,7 +107,21 @@ export function createLeague(data, opts) {
     L.meta.phase = start === 'preseason' ? 'PRESEASON' : 'REGULAR_SEASON';
     L.meta.week = start === 'preseason' ? 0 : 1;
   }
+  // development traits, longevity and known personalities
+  const rostered = Object.values(L.players).filter((p) => p.tid >= -1 && p.r);
+  initDevTraits(rostered, S0);
+  for (const p of rostered) { applyKnownPersonality(p); p.lon = initLongevity(p); p.r.pot = Math.max(p.r.ovr, projectPeak(p.pos, p.r.ovr, age(p, S0), p.pers?.work ?? 0.5, p.dev)); p.r.potEst = clamp(p.r.pot + gauss(0, 2.5), 30, 99); }
   for (const t of L.teams) autoDepth(t.tid);
+  // a fresh regular-season start skips camp, so every roster is cut to a legal 53 (best players kept)
+  if (start === 'regular' || start === 'current') {
+    for (const t of L.teams) {
+      const act = Object.values(L.players).filter((p) => p.tid === t.tid && p.status === 'ACT').length;
+      if (start === 'current' && act <= L.rules.activeMax) continue;
+      const user = L.meta.userTids.includes(t.tid);
+      aiCutdown(t.tid); fillToMax(t.tid, L.rules.activeMax);
+      if (user) news(`Your roster was trimmed to ${L.rules.activeMax}. Released players are in the free agent pool if you want them back.`, { type: 'system', tids: [t.tid], user: true });
+    }
+  }
   // Real teams roll unused cap forward and are always compliant. The public data has no rollover
   // amounts, so give any team that would start over the cap a rollover that puts it just under.
   for (const t of L.teams) {
@@ -105,6 +130,7 @@ export function createLeague(data, opts) {
   }
   // expected wins (preseason projection) from roster strength
   setExpectations();
+  captureRefDist();
   for (const ut of L.meta.userTids) setOwnerGoals(L.teams[ut]);
   // draft class for next April, scouting during the season
   genDraftClass(S0 + 1);
@@ -113,6 +139,7 @@ export function createLeague(data, opts) {
     L.meta.phase = 'FANTASY_DRAFT';
     startFantasyDraft();
   }
+  if (L.meta.phase === 'PRESEASON' || L.meta.fantasyFrom === 'PRESEASON') ensurePreseasonGames();
   news(`Welcome to THE Football Franchise. ${L.meta.userTids.map((t) => L.teams[t].region + ' ' + L.teams[t].name).join(', ') || 'You'} — the front office is yours.`, { type: 'system' });
   for (const p of Object.values(L.players)) { if (p.r) for (const k of ['tal', 'pot', 'potEst']) if (p.r[k] != null) p.r[k] = Math.round(p.r[k] * 10) / 10; if (p.pers) for (const k in p.pers) p.pers[k] = Math.round(p.pers[k] * 100) / 100; }
   L.meta.rng = rngState();

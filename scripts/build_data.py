@@ -558,7 +558,7 @@ if os.path.exists(ea_path):
     NEAR = {frozenset(x) for x in [("EDGE", "DT"), ("EDGE", "LB"), ("S", "CB"), ("S", "LB"), ("OG", "C"), ("OT", "OG"),
                                    ("TE", "FB"), ("RB", "FB"), ("K", "P")]}
     def _ok(a, b): return a == b or frozenset((a, b)) in NEAR
-    by_name_team, by_name_bd, by_name = {}, {}, {}
+    by_name_team, by_name_bd, by_name, by_ln_bd, by_ln_team = {}, {}, {}, {}, {}
     for e in ea["players"]:
         nm = _norm(e["fn"] + e["ln"])
         ps = EA_POS.get(e.get("pos"), e.get("pos"))
@@ -566,6 +566,9 @@ if os.path.exists(ea_path):
         by_name_team.setdefault((nm, tm), []).append((ps, e["ovr"]))
         if e.get("bd"): by_name_bd.setdefault((nm, e["bd"]), []).append((ps, e["ovr"]))
         by_name.setdefault(nm, []).append((ps, e["ovr"]))
+        ln_ = _norm(e["ln"])
+        if e.get("bd"): by_ln_bd.setdefault((ln_, e["bd"]), []).append((ps, e["ovr"]))
+        by_ln_team.setdefault((ln_, tm), []).append((ps, e["ovr"]))
     def _pick(lst, pos):
         lst = [v for ps, v in (lst or []) if _ok(ps, pos)]
         return lst[0] if len(lst) == 1 else None
@@ -578,6 +581,10 @@ if os.path.exists(ea_path):
         v = _pick(by_name_team.get((nm2, r.team)), pos) or _pick(by_name_team.get((nm, r.team)), pos)
         if v is None and isinstance(r.birth_date, str): v = _pick(by_name_bd.get((nm2, r.birth_date)), pos) or _pick(by_name_bd.get((nm, r.birth_date)), pos)
         if v is None: v = _pick(by_name.get(nm2), pos) or _pick(by_name.get(nm), pos)
+        # nicknames (Cam/Cameron, Sauce/Ahmad, Riq/Tariq): same last name + birthday, or same last name on the same team
+        ln_ = _norm(str(r.last_name).replace(" II", "").replace(" III", "").replace(" Jr.", ""))
+        if v is None and isinstance(r.birth_date, str): v = _pick(by_ln_bd.get((ln_, r.birth_date)), pos)
+        if v is None: v = _pick(by_ln_team.get((ln_, r.team)), pos)
         if v is not None:
             EA[p["gid"]] = v; matched += 1
     print("expert input matched", matched, "of", len(players))

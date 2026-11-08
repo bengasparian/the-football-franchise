@@ -66,7 +66,7 @@ while (guard++ < 200) {
     steps.push('fa'); readAll('fa');
     const best = API.faList({}, ctx()).rows.slice(0, 3);
     for (const f of best) console.log(' FA offer', f.name, f.ovr, run('negotiateP', { pid: f.pid, offer: { years: f.askYears, apy: f.ask * 1.05, gtd: f.ask * f.askYears * 0.4 }, mode: 'fa' })?.message);
-    for (let d = 0; d < 5; d++) run('faAdvanceDay', {});
+    for (let d = 0; d < 4; d++) run('faAdvanceDay', {});
     console.log(' FA log', G.L.fa.log.filter((x) => x.user).length, 'user signings');
   }
   if (ph === 'LEAGUE_MEETING' && !steps.includes('lm')) { steps.push('lm'); readAll('meeting'); const it = G.L.proposals.items[0]; run('vote', { id: it.id, yes: true }); const av = API.rulesView({}, ctx()).available.find((a) => !G.L.proposals.items.some((x) => x.id === a.id)); if (av) console.log('propose', run('propose', { id: av.id })); }

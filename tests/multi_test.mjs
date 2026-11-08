@@ -2,7 +2,7 @@ import fs from 'fs';
 import { G } from '../js/engine/core.js';
 import { createLeague } from '../js/engine/league.js';
 import { simUntil } from '../js/engine/season.js';
-import { teamCap, capSeason } from '../js/engine/contracts.js';
+import { teamCap, capSeason, capHit } from '../js/engine/contracts.js';
 import { capFor, age } from '../js/engine/core.js';
 const data = JSON.parse(fs.readFileSync(new URL('../data/league.json', import.meta.url)));
 const L = createLeague(data, { start: process.argv[2] || 'current', userTeams: [], seed: +(process.argv[3] || 7) });
@@ -18,6 +18,7 @@ function report(label) {
   const topApy = Object.values(L.players).filter((p) => p.contract && !p.contract.ps).sort((a, b) => b.contract.apy - a.contract.apy).slice(0, 3).map((p) => `${p.ln}(${p.pos}) ${(p.contract.apy / 1e6).toFixed(1)}M`);
   const qbs = act.filter((p) => p.pos === 'QB').sort((a, b) => b.r.ovr - a.r.ovr).slice(0, 4).map((p) => `${p.ln} ${p.r.ovr}(${age(p)})`);
   const rook = Object.values(L.players).filter((p) => p.draft?.y === L.meta.season && p.tid >= 0).sort((a, b) => b.r.ovr - a.r.ovr).slice(0, 3).map((p) => `${p.fn} ${p.ln} ${p.pos} ${p.r.ovr}`);
+  { const worst = L.teams.map((t)=>({t, c: teamCap(t.tid, capSeason())})).sort((a,b)=>a.c.space-b.c.space)[0]; if (worst.c.space < -5e6) console.log('  WORST CAP', worst.t.abbr, (worst.c.space/1e6).toFixed(1), 'dead', (worst.c.dead/1e6).toFixed(1), JSON.stringify((worst.t.dead||[]).filter(d=>d.s===capSeason()).sort((a,b)=>b.amt-a.amt).slice(0,4).map(d=>[d.name,(d.amt/1e6).toFixed(1),d.trade?'T':''])), 'roll', worst.c.rollover/1e6, 'top hits', Object.values(L.players).filter(p=>p.tid===worst.t.tid).map(p=>[p.ln, capHit(p, capSeason())]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(x=>x[0]+' '+(x[1]/1e6).toFixed(1)).join(', ')); }
   console.log(`${label} s=${L.meta.season} ph=${L.meta.phase} | n=${act.length} 90+=${c(90)} 85+=${c(85)} 80+=${c(80)} 70+=${c(70)} mean=${(o.reduce((a,b)=>a+b,0)/o.length).toFixed(1)} | cap ${(capFor(capSeason())/1e6).toFixed(1)}M over=${over} minSpace=${(Math.min(...caps.map((c)=>c.space))/1e6).toFixed(1)}M | act ${Math.min(...sizes)}-${Math.max(...sizes)} ps ${Math.min(...ps)}-${Math.max(...ps)} | FA ${Object.values(L.players).filter(p=>p.tid===-1).length} RET ${Object.values(L.players).filter(p=>p.tid===-3).length} total ${Object.keys(L.players).length}`);
   console.log('   top$', topApy.join(', '), '| QBs', qbs.join(', '), '| rookies', rook.join(', '));
 }

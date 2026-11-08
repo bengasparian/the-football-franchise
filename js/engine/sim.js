@@ -74,7 +74,13 @@ function buildUnit(tid, ctx) {
   u.dcB = ((C[st.dc]?.def ?? 70) - 70) / 10 + ((C[st.hc]?.def ?? 70) - 70) / 20;
   u.gm = (C[st.hc]?.gm ?? 70);
   u.agg = (C[st.hc]?.agg ?? 0.5);
-  u.passLean = (C[st.oc]?.passLean ?? 0.5);
+  // team identity: a great QB and receivers tilt toward throwing; a great back and a mauling line tilt toward running
+  const qbO = u.QB[0]?.r.ovr ?? 70, rbO = u.RB[0]?.r.ovr ?? 70;
+  const wrO = u.WR.slice(0, 2).reduce((a, p) => a + p.r.ovr, 0) / Math.max(1, u.WR.slice(0, 2).length);
+  const rbk = [...u.OT, ...u.OG, ...u.C].reduce((a, p) => a + (p.r.a.rbk ?? 70), 0) / Math.max(1, u.OT.length + u.OG.length + u.C.length);
+  const pbk = [...u.OT, ...u.OG, ...u.C].reduce((a, p) => a + (p.r.a.pbk ?? 70), 0) / Math.max(1, u.OT.length + u.OG.length + u.C.length);
+  const rosterLean = clamp(0.5 + (qbO - 80) / 40 + (wrO - rbO) / 80 + (pbk - rbk) / 80, 0.15, 0.85);
+  u.passLean = 0.45 * (C[st.oc]?.passLean ?? 0.5) + 0.55 * rosterLean;
   u.all = all;
   rateUnit(u);
   return u;
@@ -295,7 +301,7 @@ export function simGame(game, opts = {}) {
     }
     // end-of-half kneel
     if (late && diff > 0 && S.clock <= 120 && S.q === 4 && S.to[1 - S.off] === 0 && S.clock <= 40 * (5 - S.down)) return 'kneel';
-    let passP = 0.555 * (sl.passRate ?? 1) + (o.passLean - 0.5) * 0.12;
+    let passP = 0.555 * (sl.passRate ?? 1) + (o.passLean - 0.5) * 0.2;
     if (S.down === 3) passP += S.dist >= 7 ? 0.3 : S.dist >= 4 ? 0.15 : -0.1;
     if (S.down === 1 && S.dist === 10) passP -= 0.05;
     if (S.down === 2 && S.dist >= 8) passP += 0.08;

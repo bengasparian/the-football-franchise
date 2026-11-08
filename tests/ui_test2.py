@@ -44,7 +44,7 @@ async def main():
         await pg.goto(URL + '#/standings'); await pg.wait_for_timeout(800); await check(pg, 'standings')
         await sim(pg, 'seasonEnd')
         await pg.goto(URL + '#/history'); await pg.wait_for_timeout(800); await check(pg, 'history')
-        await pg.click('[data-act=histTab][data-k=awards]'); await pg.wait_for_timeout(500)
+        await pg.click('[data-act=nhTab][data-k=awards]'); await pg.wait_for_timeout(500)
         await pg.screenshot(path='/tmp/u_awards.png')
         await click_primary(pg)  # -> RESIGN
         await pg.goto(URL + '#/home'); await pg.wait_for_timeout(1000); await check(pg, 'home resign')

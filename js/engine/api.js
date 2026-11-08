@@ -1,19 +1,24 @@
 // Public API used by the UI (through the worker). Every method returns plain JSON.
 // ctx.tid = the team the caller manages (local user or online guest).
+import { REAL_HISTORY } from './history.js';
+import { awardScores } from './awards.js';
+import { CITIES, BRANDS, crest, relocateTeam, rebrandTeam } from './relocation.js';
+import { faTick, faStatus } from './fa.js';
+import { DEV_INFO, longevityLabel } from './dev.js';
 import { G, age, capFor, clamp, setRngState, rngState, fmtMoney, isUser, news } from './core.js';
 import { POSITIONS, POS_NAMES, PHASE_LABEL, ROUND_LABEL, DEFAULT_SLIDERS, SLIDER_INFO, DEPTH_SLOTS } from './const.js';
 import { createLeague } from './league.js';
 import { ATTR_NAMES, OVR_W, potLabel, teamOvr } from './ratings.js';
 import { personalityLabels } from './personality.js';
 import { marketValue, playerAsk, negotiate, signContract, teamCap, capSeason, futureCommitments, deadMoneyIfCut, releasePlayer, restructurePreview,
-  restructure, applyTag, tagValues, exerciseOption, fifthYearOptionValue, capHit, psDeal, minDeal, idealYears } from './contracts.js';
+  restructure, applyTag, tagValues, exerciseOption, fifthYearOptionValue, capHit, psDeal, minDeal, idealYears, negotiationOptions } from './contracts.js';
 import { autoDepth, setDepth, rosterCounts } from './roster.js';
 import { placeOnIR, activateFromIR } from './injuries.js';
 import { computeStandings, playoffSeeds, divisionOrder, clinchMarkers } from './standings.js';
 import { simUntil, advance, superBowlNumeral, userBlocker } from './season.js';
 import { freeAgents, userOffer, offerScore } from './fa.js';
 import { evaluateTrade, executeTrade, tradeFinder, makeItWork, pickLabel, playerTradeValue, pickTradeValue, projectedPickNo, teamMode } from './trade.js';
-import { prospects, scoutProspect, scoutedView, draftCurrentPick, simDraftToUser, userOnClock, SCOUT_COST } from './draft.js';
+import { prospects, scoutProspect, scoutedView, draftCurrentPick, simDraftToUser, userOnClock, SCOUT_COST, draftClock, draftTick, simDraftPicks, simDraftRound } from './draft.js';
 import { fantasyPool, fantasyOnClock, fantasyPick, fantasySimToUser } from './fantasy.js';
 import { hireCoach, fireCoach, coachOvr } from './coaches.js';
 import { attendanceFor, homeGameRevenue } from './finance.js';
@@ -45,6 +50,7 @@ export function pRow(p, extra = {}) {
     morale: p.morale, holdout: !!p.holdout, tradeReq: !!p.tradeReq, onBlock: !!p.onBlock,
     contract: c ? { apy: c.apy, exp: c.exp, yrsLeft: c.ps ? 0 : c.exp - capSeason() + 1, hit: c.ps ? c.ps : capHit(p, capSeason()), gtd: c.gtd, rookie: !!c.rookie, tag: c.tag || null, ps: !!c.ps, option5: c.option5 || null } : null,
     g: st?.g || 0, line: st ? statSummary(p, st) : '', ovrDelta: p.r.ovr - (p.r.ovrStart ?? p.r.ovr), draft: p.draft || null,
+    tc: p.tid >= 0 ? T(p.tid).c1 : '#334155', dev: p.dev || 'Normal', lon: p.lon ?? null, gen: !!p.gen,
     ...extra,
   };
 }
@@ -89,6 +95,8 @@ export function header(_, ctx) {
     openEvents: Lg.events.filter((e) => e.open && e.tid === tid).length, openOffers: Lg.offers.filter((o) => o.status === 'open' && o.toTid === tid).length,
     fired: (m.firedNotices || []).filter((f) => f.tid === tid && !f.seen).length > 0, online: !!m.online, sbNum: superBowlNumeral(m.season),
     blocker: userBlocker(tid),
+    bye: m.phase === 'REGULAR_SEASON' && !Lg.games.some((g) => g.s === m.season && g.type === 'REG' && g.w === m.week && (g.h === tid || g.a === tid)),
+    roundLabel: m.phase === 'PLAYOFFS' ? (ROUND_LABEL[Lg.playoffs?.round] || 'Playoffs') : null,
   };
 }
 
@@ -119,7 +127,119 @@ export function dashboard({ tid }, ctx) {
     goalResults: t.goalResults,
     expiring: m.phase === 'RESIGN' ? ps.filter((p) => p.contract && !p.contract.ps && p.contract.exp === m.season).sort((a, b) => b.r.ovr - a.r.ovr).map((p) => pRow(p, { ask: playerAsk(p, tid).apy, mv: marketValue(p) })) : [],
     tagUsed: t.tagUsed === m.season + 1,
+    bye: m.phase === 'REGULAR_SEASON' && !Lg.games.some((g) => g.s === m.season && g.type === 'REG' && g.w === m.week && (g.h === tid || g.a === tid)) ? m.week : null,
+    byeWeek: byeWeek(tid, m.season),
+    todo: todoList(tid, ctx),
+    recapWeek: lastPlayedWeek(),
   };
+}
+// What the GM should take care of right now, by phase.
+function todoList(tid, ctx) {
+  const Lg = L();
+  const m = Lg.meta;
+  const t = T(tid);
+  const ps = Object.values(Lg.players).filter((p) => p.tid === tid);
+  const cnt = rosterCounts(tid);
+  const cap = teamCap(tid);
+  const out = [];
+  const add = (txt, href, urgent = false, done = false) => out.push({ txt, href, urgent, done });
+  const offers = Lg.offers.filter((o) => o.toTid === tid && o.status === 'open').length;
+  const evs = Lg.events.filter((e) => e.tid === tid && e.open).length;
+  if (evs) add(`Respond to ${evs} front-office decision${evs > 1 ? 's' : ''}`, '#/home', true);
+  if (offers) add(`Review ${offers} trade offer${offers > 1 ? 's' : ''}`, '#/offers');
+  if (cap.space < 0) add(`Get under the salary cap (${Math.round(cap.space / 1e5) / 10}M)`, '#/cap', true);
+  const injStarters = ps.filter((p) => p.inj && p.inj.wk > 0 && Object.values(t.depth).some((d) => d.slice(0, 2).includes(p.pid)));
+  switch (m.phase) {
+    case 'PRESEASON':
+      add('Set your depth chart for the opener', '#/depth');
+      if (cnt.ACT > Lg.rules.activeMax) add(`Cut down to ${Lg.rules.activeMax} (you have ${cnt.ACT})`, '#/roster', m.week >= (Lg.rules.preseasonGames || 3));
+      add('Watch camp battles in preseason games', '#/schedule');
+      break;
+    case 'REGULAR_SEASON':
+      if (injStarters.length) add(`Replace injured starters: ${injStarters.slice(0, 3).map((p) => p.ln).join(', ')}`, '#/depth', true);
+      if (cnt.ACT < Lg.rules.activeMax) add(`Fill open roster spots (${cnt.ACT}/${Lg.rules.activeMax})`, '#/fa');
+      if (m.week <= Lg.rules.tradeDeadlineWeek) add(`Trade deadline after Week ${Lg.rules.tradeDeadlineWeek}${m.week >= Lg.rules.tradeDeadlineWeek - 1 ? ': last chance!' : ''}`, '#/trade', m.week >= Lg.rules.tradeDeadlineWeek - 1);
+      { const ext = ps.filter((p) => p.contract && !p.contract.ps && p.contract.exp === m.season && p.r.ovr >= 75).length; if (ext) add(`${ext} key player${ext > 1 ? 's' : ''} in a contract year. Extend now or wait.`, '#/cap'); }
+      add('Scout next year\'s draft class', '#/draft');
+      break;
+    case 'PLAYOFFS': add('Set your lineup for the playoffs', '#/depth'); break;
+    case 'SEASON_END': add('Review the season and awards', '#/awards'); add('Check next year\'s cap', '#/cap'); break;
+    case 'RESIGN': {
+      const exp = ps.filter((p) => p.contract && !p.contract.ps && p.contract.exp === m.season).length;
+      add(`Re-sign, tag or let go ${exp} expiring player${exp === 1 ? '' : 's'}`, '#/home', exp > 0);
+      add('Consider your franchise tag', '#/cap');
+      break; }
+    case 'FREE_AGENCY': add(`Free agency day ${Lg.fa?.day}/${Lg.fa?.maxDay}: make offers`, '#/fa', true); break;
+    case 'LEAGUE_MEETING': add('Vote on rule proposals', '#/rules', true); break;
+    case 'DRAFT': add('Go to the draft room', '#/draft', true); break;
+    case 'POST_DRAFT': add('Sign undrafted free agents', '#/fa'); add('Sign your draft picks', '#/roster'); break;
+    case 'TRAINING_CAMP': add('Set your depth chart', '#/depth'); add('Extend players before the season', '#/cap'); break;
+    case 'FANTASY_DRAFT': add('Make your fantasy draft picks', '#/fantasy', true); break;
+  }
+  return out;
+}
+function lastPlayedWeek() {
+  const Lg = L();
+  const gs = Lg.games.filter((g) => g.s === Lg.meta.season && g.played && g.type !== 'PRE');
+  if (!gs.length) return null;
+  const last = gs.reduce((a, g) => (g.type === 'REG' ? Math.max(a, g.w) : a), 0);
+  return last || null;
+}
+// Recap of a week: every game, who won, upsets and the standout performances.
+export function recap({ week = null, type = null } = {}) {
+  const Lg = L();
+  const s = Lg.meta.season;
+  let gs;
+  if (type && type !== 'REG') gs = Lg.games.filter((g) => g.s === s && g.type === type && g.played);
+  else { const w = week ?? lastPlayedWeek(); gs = Lg.games.filter((g) => g.s === s && g.type === 'REG' && g.w === w && g.played); week = w; }
+  const games = gs.map((g) => {
+    const win = g.hs > g.as ? g.h : g.as > g.hs ? g.a : null;
+    const exp = (tid) => T(tid).expectWins ?? 8.5;
+    const upset = win != null && exp(win) + 2 <= exp(win === g.h ? g.a : g.h);
+    const stars = [];
+    for (const pid in g.box?.pl || {}) {
+      const p = Lg.players[pid]; if (!p || ['OT', 'OG', 'C', 'LS', 'FB'].includes(p.pos)) continue;
+      const b = g.box.pl[pid];
+      const v = av(p, b);
+      if (v > 9) stars.push({ pid, name: `${p.fn[0]}. ${p.ln}`, pos: p.pos, v, line: statSummary(p, b) });
+    }
+    stars.sort((a, b) => b.v - a.v);
+    return { ...gameLite(g), upset, stars: stars.slice(0, 3) };
+  });
+  const weeks = [...new Set(Lg.games.filter((g) => g.s === s && g.type === 'REG' && g.played).map((g) => g.w))].sort((a, b) => a - b);
+  const byes = week ? Lg.teams.filter((t) => !Lg.games.some((g) => g.s === s && g.type === 'REG' && g.w === week && (g.h === t.tid || g.a === t.tid))).map((t) => t.abbr) : [];
+  return { week, games, weeks, byes, season: s };
+}
+// Live award race (top candidates right now).
+export function awardRace() {
+  const Lg = L();
+  const s = Lg.meta.season;
+  const st = Lg.standingsCache || computeStandings();
+  const { res } = awardScores(s, st);
+  const out = {};
+  for (const k of ['MVP', 'OPOY', 'DPOY', 'OROY', 'DROY', 'CPOY']) {
+    const top = res[k].slice(0, 8);
+    const best = top[0]?.sc || 1;
+    out[k] = top.map((x) => ({ ...pRow(x.p), sc: Math.round(x.sc), share: Math.round((x.sc / best) * 100), teamAbbr: T(x.team).abbr, teamRec: st[x.team] ? `${st[x.team].w}-${st[x.team].l}${st[x.team].t ? '-' + st[x.team].t : ''}` : '' }));
+  }
+  return { season: s, week: Lg.meta.week, phase: Lg.meta.phase, race: out, final: Lg.awards[s] ? true : false };
+}
+// The full history of the NFL: real champions and awards plus everything that has happened in this league.
+export function nflHistory() {
+  const Lg = L();
+  const byAbbr = Object.fromEntries(Lg.teams.map((t) => [t.history?.[0]?.abbr || t.abbr, t]));
+  const tl = (ab) => { const t = byAbbr[ab] || Lg.teams.find((x) => x.abbr === ab); return t ? { abbr: t.abbr, logo: t.logo, tid: t.tid } : { abbr: ab }; };
+  const real = REAL_HISTORY.sb.map((x) => ({ ...x, real: true, wTeam: tl(x.wa), lTeam: tl(x.la) }));
+  const sims = Lg.champions.filter((c) => c.s > 2025).map((c) => ({ n: superBowlNumeral(c.s), s: c.s, w: `${T(c.tid).region} ${T(c.tid).name}`, wTeam: teamLite(T(c.tid)), l: c.ru != null ? `${T(c.ru).region} ${T(c.ru).name}` : '', lTeam: c.ru != null ? teamLite(T(c.ru)) : null, sc: c.score || '', mvp: c.mvp && Lg.players[c.mvp] ? `${Lg.players[c.mvp].fn} ${Lg.players[c.mvp].ln}` : '', real: false }));
+  const awards = {};
+  for (const k of ['MVP', 'OPOY', 'DPOY', 'OROY', 'DROY']) {
+    awards[k] = Object.entries(REAL_HISTORY[k]).map(([y, [n, ab]]) => ({ s: +y, name: n, team: tl(ab), real: true }));
+    for (const [y, a] of Object.entries(Lg.awards)) if (+y > 2025 && a[k]?.[0]) { const x = a[k][0]; const p = Lg.players[x.pid]; awards[k].push({ s: +y, name: p ? `${p.fn} ${p.ln}` : '?', pid: x.pid, team: teamLite(T(x.tid)), real: false }); }
+    awards[k].sort((a, b) => b.s - a.s);
+  }
+  const titles = {};
+  for (const x of [...real, ...sims]) { const ab = x.wTeam?.abbr; if (ab) titles[ab] = (titles[ab] || 0) + 1; }
+  return { sb: [...sims.reverse(), ...real.reverse()], awards, titles: Object.entries(titles).map(([abbr, n]) => ({ ...tl(abbr), abbr, n })).sort((a, b) => b.n - a.n) };
 }
 export function gameLite(g) {
   return { gid: g.gid, s: g.s, w: g.w, type: g.type, h: g.h, a: g.a, hs: g.hs, as: g.as, played: g.played, ot: g.ot, hAbbr: T(g.h).abbr, aAbbr: T(g.a).abbr, hLogo: T(g.h).logo, aLogo: T(g.a).logo, real: !!g.real, d: g.d, label: ROUND_LABEL[g.type] };
@@ -154,7 +274,8 @@ export function playerDetail({ pid }, ctx) {
   const w = OVR_W[p.pos] || {};
   for (const k in p.r.a) attrs[k] = { v: p.r.a[k], key: !!w[k], name: ATTR_NAMES[k] };
   const yrsLeft = c && !c.ps ? c.exp - capSeason() + 1 : 0;
-  const canExtend = mine && c && !c.ps && yrsLeft <= 2 && !c.tag && !(c.rookie && (p.exp ?? 0) < 2);
+  // vets can extend any time (in season too); rookies become eligible after their third season
+  const canExtend = mine && c && !c.ps && yrsLeft <= 3 && !c.tag && !(c.rookie && (p.exp ?? 0) < 3) && c.signed !== Lg.meta.season;
   const expiring = mine && c && Lg.meta.phase === 'RESIGN' && c.exp === s;
   const scouted = p.status === 'PROSPECT' ? scoutedView(p, ctx.tid) : null;
   return {
@@ -175,6 +296,9 @@ export function playerDetail({ pid }, ctx) {
     tradeValue: p.tid >= 0 ? playerTradeValue(p, ctx.tid) : null, teamName: tName(p.tid), team: p.tid >= 0 ? teamLite(T(p.tid)) : null,
     phase: Lg.meta.phase, faOffers: isFA && Lg.fa?.offers?.[pid] ? Lg.fa.offers[pid].map((o) => ({ tid: o.tid, abbr: T(o.tid).abbr, mine: o.tid === ctx.tid, years: o.tid === ctx.tid ? o.years : null, apy: o.tid === ctx.tid ? o.apy : null })) : null,
     holdout: !!p.holdout, waiver: !!p.waiver, txHist: Lg.transactions.filter((t) => t.pids?.includes(pid)).slice(0, 15),
+    dev: p.status === 'PROSPECT' && (scouted?.lvl ?? 0) < 3 ? null : (p.dev || 'Normal'), devInfo: DEV_INFO[p.dev || 'Normal'],
+    lon: p.status === 'PROSPECT' && (scouted?.lvl ?? 0) < 2 ? null : p.lon, lonLabel: p.lon != null ? longevityLabel(p.lon) : null,
+    col: p.col || null, colYrs: p.colYrs || null, gen: p.status === 'PROSPECT' ? !!p.gen && (scouted?.lvl ?? 0) >= 1 : !!p.gen,
   };
 }
 
@@ -210,14 +334,18 @@ export function standings({ season } = {}) {
   return { season: s, divs, seeds, power, playoffs: Lg.playoffs?.s === s ? Lg.playoffs : null, userTids: Lg.meta.userTids, teamsPerConf: Lg.rules.playoffTeamsPerConf };
   function pick(x) { return { w: x.w, l: x.l, t: x.t, pf: x.pf, pa: x.pa, pct: x.pct, dw: x.dw, dl: x.dl, cw: x.cw, cl: x.cl, streak: x.streak, home: x.home, away: x.away, sos: x.sos }; }
 }
-export function schedule({ tid = null, season = null, week = null } = {}) {
+export function schedule({ tid = null, season = null, week = null, pre = true, type = null } = {}) {
   const Lg = L();
   const s = season ?? Lg.meta.season;
-  let gs = Lg.games.filter((g) => g.s === s && g.type !== 'PRE');
+  let gs = Lg.games.filter((g) => g.s === s && (g.type !== 'PRE' || pre));
   if (tid != null) gs = gs.filter((g) => g.h === tid || g.a === tid);
-  if (week != null) gs = gs.filter((g) => g.w === week);
-  gs.sort((a, b) => a.w - b.w || (a.d || '').localeCompare(b.d || ''));
-  return { season: s, games: gs.map(gameLite), week: Lg.meta.week, phase: Lg.meta.phase, byeWeeks: tid != null ? byeWeek(tid, s) : null };
+  if (week != null) gs = gs.filter((g) => g.w === week && (type ? g.type === type : g.type === 'REG'));
+  const order = { PRE: 0, REG: 1, WC: 2, DIV: 3, CONF: 4, SB: 5 };
+  gs.sort((a, b) => (order[a.type] ?? 1) - (order[b.type] ?? 1) || a.w - b.w || (a.d || '').localeCompare(b.d || ''));
+  const byes = week != null ? Lg.teams.filter((t) => !Lg.games.some((g) => g.s === s && g.type === 'REG' && g.w === week && (g.h === t.tid || g.a === t.tid))).map(teamLite) : null;
+  const st = Lg.standingsCache || computeStandings();
+  const rec = Object.fromEntries(Lg.teams.map((t) => [t.tid, st[t.tid] ? `${st[t.tid].w}-${st[t.tid].l}${st[t.tid].t ? '-' + st[t.tid].t : ''}` : '']));
+  return { season: s, games: gs.map(gameLite), week: Lg.meta.week, phase: Lg.meta.phase, byeWeeks: tid != null ? byeWeek(tid, s) : null, byes, rec, weeks: Lg.rules.weeks || 18 };
 }
 function byeWeek(tid, s) {
   const ws = new Set(G.L.games.filter((g) => g.s === s && g.type === 'REG' && (g.h === tid || g.a === tid)).map((g) => g.w));
@@ -319,6 +447,14 @@ export function promoteP({ pid }, ctx) {
 export function autoCutdown({ tid }, ctx) { requireOwn(ctx, tid); aiCutdown(tid); return { ok: true }; }
 export function toggleBlock({ pid }, ctx) { const p = L().players[pid]; requireOwn(ctx, p.tid); p.onBlock = !p.onBlock; return { ok: true, onBlock: p.onBlock }; }
 
+export function negOptions({ pid, mode }, ctx) {
+  const Lg = L();
+  const p = Lg.players[pid];
+  if (!Lg.meta.userTids.includes(ctx.tid)) throw new Error('No team');
+  if (p.tid >= 0) requireOwn(ctx, p.tid);
+  const o = negotiationOptions(pid, ctx.tid, { fa: p.tid === -1 });
+  return { ...o, reasons: o.reasons.map(([l, d]) => ({ l, d })) };
+}
 export function negotiateP({ pid, offer, mode }, ctx) {
   const Lg = L();
   const p = Lg.players[pid];
@@ -331,6 +467,7 @@ export function negotiateP({ pid, offer, mode }, ctx) {
   const startS = mode === 'extend' ? p.contract.exp + 1 : s;
   const cap = teamCap(tid, startS);
   const res = negotiate(pid, tid, offer, {});
+  if (res.status === 'refused' && Lg.meta.phase === 'RESIGN' && mode === 'resign') (p.grudge ||= {})[tid] = { s: Lg.meta.season, why: 'Contract talks broke down' };
   if (res.status === 'accepted') {
     const hitNow = mode === 'extend' ? 0 : offer.apy;
     if (hitNow > cap.space + capHit(p, s)) return { status: 'counter', message: 'He would accept, but you do not have the cap space.', ev: res.ev };
@@ -352,7 +489,7 @@ export function faList({ pos = 'ALL', limit = 400 } = {}, ctx) {
       const offers = Lg.fa?.offers?.[p.pid] || [];
       return pRow(p, { ask: ask.apy, askYears: ask.years, mv: ask.mv, offers: offers.length, myOffer: offers.find((o) => o.tid === ctx.tid) || null, lastTeam: p.lastTeam != null && p.lastTeam >= 0 ? T(p.lastTeam).abbr : null, udfa: !!p.udfa });
     }),
-    day: Lg.fa?.day ?? null, phase: Lg.meta.phase, cap: teamCap(ctx.tid), signings: (Lg.fa?.log || []).slice(-40).reverse().map((x) => ({ ...x, name: `${Lg.players[x.pid]?.fn} ${Lg.players[x.pid]?.ln}`, abbr: T(x.tid).abbr })),
+    day: Lg.fa?.day ?? null, maxDay: Lg.fa?.maxDay ?? null, status: Lg.fa ? faStatus() : null, phase: Lg.meta.phase, cap: teamCap(ctx.tid), signings: (Lg.fa?.log || []).slice(-40).reverse().map((x) => ({ ...x, name: `${Lg.players[x.pid]?.fn} ${Lg.players[x.pid]?.ln}`, abbr: T(x.tid).abbr })),
   };
 }
 export function withdrawOffer({ pid }, ctx) { const Lg = L(); if (Lg.fa?.offers?.[pid]) Lg.fa.offers[pid] = Lg.fa.offers[pid].filter((o) => o.tid !== ctx.tid); return { ok: true }; }
@@ -441,9 +578,9 @@ export function draftBoard({ pos = 'ALL' } = {}, ctx) {
   return {
     rows: ps.slice(0, 450).map((p) => {
       const v = scoutedView(p, ctx.tid);
-      return { pid: p.pid, name: `${p.fn} ${p.ln}`, pos: p.pos, age: age(p, (Lg.draft?.s || Lg.meta.season + 1)), college: p.college, ht: p.ht, wt: p.wt, rank: p.scout.rank, posRank: p.scout.posRank, combine: p.combine, lvl: v.lvl, lo: v.ovrLo, hi: v.ovrHi, pot: v.pot, proj: projRound(p.scout.rank), onBoard: myBoard.includes(p.pid) };
+      return { pid: p.pid, name: `${p.fn} ${p.ln}`, pos: p.pos, age: age(p, (Lg.draft?.s || Lg.meta.season + 1)), college: p.college, ht: p.ht, wt: p.wt, rank: p.scout.rank, posRank: p.scout.posRank, combine: p.combine, lvl: v.lvl, lo: v.ovrLo, hi: v.ovrHi, pot: v.pot, proj: projRound(p.scout.rank), onBoard: myBoard.includes(p.pid), gen: !!p.gen && v.lvl >= 1, colYrs: p.colYrs || null };
     }),
-    scoutPts: t.scoutPts || 0, costs: SCOUT_COST, board: myBoard,
+    scoutPts: t.scoutPts || 0, points: t.scoutPts || 0, costs: SCOUT_COST, board: myBoard,
   };
 }
 function projRound(rank) { return rank <= 32 ? '1st' : rank <= 64 ? '2nd' : rank <= 100 ? '3rd' : rank <= 140 ? '4th' : rank <= 180 ? '5th' : rank <= 220 ? '6th' : rank <= 262 ? '7th' : 'UDFA'; }
@@ -459,12 +596,21 @@ export function draftState(_, ctx) {
   const log = (d?.log || []).map((x) => ({ ...x, name: `${Lg.players[x.pid]?.fn} ${Lg.players[x.pid]?.ln}`, pos: Lg.players[x.pid]?.pos, college: Lg.players[x.pid]?.college, abbr: T(x.tid).abbr, logo: T(x.tid).logo }));
   const upcoming = order.slice(d?.idx ?? 0, (d?.idx ?? 0) + 40).filter(Boolean).map((pk) => ({ id: pk.id, no: pk.no, rd: pk.rd, tid: pk.tid, abbr: T(pk.tid).abbr, logo: T(pk.tid).logo, mine: pk.tid === ctx.tid, via: pk.orig !== pk.tid ? T(pk.orig).abbr : null, comp: !!pk.comp }));
   const myPicks = Lg.picks.filter((x) => x.tid === ctx.tid && x.s === s).map((k) => ({ id: k.id, label: pickLabel(k), no: k.no }));
-  return { s, active: Lg.meta.phase === 'DRAFT', done: !!d?.done, idx: d?.idx ?? 0, onClock: upcoming[0] || null, userOnClock: !!userOnClock() && userOnClock().tid === ctx.tid, log: log.slice(-300).reverse(), upcoming, myPicks, orderSet: !!orderIds.length };
+  return { clock: draftClock(), s, active: Lg.meta.phase === 'DRAFT', done: !!d?.done, idx: d?.idx ?? 0, onClock: upcoming[0] || null, userOnClock: !!userOnClock() && userOnClock().tid === ctx.tid, log: log.slice(-300).reverse(), upcoming, myPicks, orderSet: !!orderIds.length };
 }
 export function draftPick({ pid }, ctx) {
   const up = userOnClock();
   if (!up || !own(ctx, up.tid)) return { error: "You're not on the clock." };
   return draftCurrentPick(pid);
+}
+export function draftLive(_, ctx) {
+  if (G.L.meta.online && !ctx.host) return { clock: draftClock() };
+  const r = draftTick();
+  return { ...r, clock: draftClock() };
+}
+export function draftSimN({ n = 1, round = false }, ctx) {
+  if (G.L.meta.online && !ctx.host) return { error: 'Only the host can sim the draft.' };
+  return round ? simDraftRound() : simDraftPicks(n);
 }
 export function draftSim({ all = false }, ctx) { if (!ctx.host) { const up = userOnClock(); if (up && up.tid !== ctx.tid) return { error: 'Waiting on another GM.' }; } return simDraftToUser(all); }
 export function draftAuto(_, ctx) { const up = userOnClock(); if (!up || !own(ctx, up.tid)) return { error: 'Not on the clock' }; return draftCurrentPick(null); }
@@ -578,6 +724,12 @@ export function sim({ target }, ctx) {
   if (G.L.meta.online && !ctx.host) return { error: 'Only the host can advance the league.' };
   return simUntil(target || 'week');
 }
+export function faLive(_, ctx) {
+  // live tick: only the host's clock drives signings in an online league
+  if (G.L.meta.online && !ctx.host) return { status: faStatus() };
+  const r = faTick();
+  return { status: r.status || faStatus(), signed: (r.signed || []).map((x) => ({ ...x, name: `${G.L.players[x.pid]?.fn} ${G.L.players[x.pid]?.ln}`, pos: G.L.players[x.pid]?.pos, ovr: G.L.players[x.pid]?.r.ovr, abbr: T(x.tid).abbr, logo: T(x.tid).logo })) };
+}
 export function faAdvanceDay(_, ctx) { if (G.L.meta.online && !ctx.host) return { error: 'Only the host can advance.' }; return advance({ day: true }); }
 export function onlineTeams() { return G.L.teams.map(teamLite).map((t) => ({ ...t, taken: G.L.meta.userTids.includes(t.tid) })); }
 export function claimTeam({ tid }, ctx) {
@@ -588,3 +740,28 @@ export function claimTeam({ tid }, ctx) {
 }
 export function releaseTeam({ tid }) { G.L.meta.userTids = G.L.meta.userTids.filter((t) => t !== tid); return { ok: true }; }
 export { setRngState, rngState, isUser };
+
+// ------------------------------------------------------------------ franchise identity
+export function franchiseOptions(_, ctx) {
+  const Lg = L();
+  const taken = new Set(Lg.teams.map((t) => t.region));
+  const t = T(ctx.tid);
+  return {
+    team: teamLite(t), history: t.history || [], offseason: !['PRESEASON', 'REGULAR_SEASON', 'PLAYOFFS'].includes(Lg.meta.phase),
+    cities: CITIES.map((c) => ({ city: c[0], region: c[1], market: c[2], state: c[3], noTax: c[4], taken: taken.has(c[1]) })),
+    brands: BRANDS.map((b) => ({ name: b[0], c1: b[1], c2: b[2], shape: b[3], logo: crest(b[0].slice(0, 2), b[1], b[2], b[3]), taken: Lg.teams.some((x) => x.name === b[0]) })),
+  };
+}
+export function relocate({ city, brand = null }, ctx) {
+  requireOwn(ctx, ctx.tid);
+  if (['PRESEASON', 'REGULAR_SEASON', 'PLAYOFFS'].includes(L().meta.phase)) return { error: 'Relocation can only happen in the offseason.' };
+  const b = brand ? BRANDS.find((x) => x[0] === brand.name) : null;
+  return relocateTeam(ctx.tid, city, b ? { name: b[0], c1: brand.c1 || b[1], c2: brand.c2 || b[2], shape: brand.shape || b[3] } : brand ? { name: String(brand.name).slice(0, 18), c1: brand.c1, c2: brand.c2, shape: brand.shape } : { keepBrand: true });
+}
+export function rebrand({ name, c1, c2, shape }, ctx) {
+  requireOwn(ctx, ctx.tid);
+  if (['PRESEASON', 'REGULAR_SEASON', 'PLAYOFFS'].includes(L().meta.phase)) return { error: 'Rebrands can only happen in the offseason.' };
+  name = String(name || '').trim().slice(0, 18);
+  if (!name) return { error: 'Pick a name.' };
+  return rebrandTeam(ctx.tid, { name, c1, c2, shape });
+}

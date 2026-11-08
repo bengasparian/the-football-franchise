@@ -119,3 +119,23 @@ export const SLIDER_INFO = {
   holdouts: ['Holdouts & trade demands', 'How often unhappy players act out'],
   retirementAge: ['Career length', 'Higher = players play longer'],
 };
+
+// Real future draft picks that have already changed hands (as of the data snapshot, Nov 2026).
+// [round, original team, current owner]. Source: 2027 NFL draft "trades involving draft picks".
+export const TRADED_PICKS = {
+  2027: [
+    [1, 'GB', 'DAL'], [1, 'IND', 'NYJ'], [1, 'DAL', 'NYJ', 'earlierOf:DAL,GB'], [1, 'LAR', 'CLE'], [1, 'CHI', 'TEN'],
+    [2, 'HOU', 'ARI'],
+    [3, 'LAR', 'KC'], [3, 'PHI', 'MIN'], [3, 'DAL', 'PIT'], [3, 'SEA', 'IND'],
+    [4, 'MIN', 'CAR'], [4, 'DAL', 'GB'], [4, 'NYG', 'CLE'], [4, 'SEA', 'CLE'], [4, 'SF', 'IND'], [4, 'CHI', 'TEN'], [4, 'PIT', 'DAL'],
+    [5, 'HOU', 'CLE'], [5, 'DAL', 'PIT'], [5, 'PIT', 'MIA'], [5, 'CHI', 'NE'], [5, 'NE', 'PHI'], [5, 'NYG', 'MIN'], [5, 'BAL', 'PHI'], [5, 'CAR', 'MIN'],
+    [6, 'SF', 'KC'], [6, 'NYJ', 'MIN'], [6, 'GB', 'PHI'], [6, 'NO', 'NE'], [6, 'CLE', 'HOU'], [6, 'PHI', 'NYJ'], [6, 'LAC', 'NO'], [6, 'KC', 'NYJ'],
+    [6, 'BAL', 'SF'], [6, 'MIN', 'NE'], [6, 'ATL', 'KC'], [6, 'JAX', 'NYG'], [6, 'DAL', 'PIT'], [6, 'ARI', 'HOU'], [6, 'IND', 'BUF'],
+    [7, 'HOU', 'ARI'], [7, 'MIA', 'PIT'], [7, 'KC', 'SF'], [7, 'MIN', 'NYJ'], [7, 'NYJ', 'PHI'], [7, 'LAR', 'BAL'], [7, 'BAL', 'LAC'],
+    [7, 'NO', 'DEN'], [7, 'LAC', 'HOU'], [7, 'ATL', 'SEA'], [7, 'NYG', 'MIA'], [7, 'DAL', 'PHI'], [7, 'LV', 'BUF'], [7, 'SF', 'HOU'],
+  ],
+  2028: [
+    [1, 'CHI', 'TEN'], [1, 'NE', 'PHI'], [2, 'LAR', 'CLE'], [2, 'DAL', 'PIT'], [2, 'BAL', 'PHI'],
+    [5, 'TEN', 'CHI'], [5, 'SEA', 'IND'], [7, 'NE', 'NO'],
+  ],
+};

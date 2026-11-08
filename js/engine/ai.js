@@ -40,7 +40,7 @@ export function aiWeekly(tid, list = null) {
     for (const p of healthy) cnt[p.pos] = (cnt[p.pos] || 0) + 1;
     const short = Object.entries({ QB: 2, RB: 3, WR: 5, TE: 2, OT: 3, OG: 3, C: 1, EDGE: 3, DT: 3, LB: 3, CB: 4, S: 3, K: 1, P: 1, LS: 1 }).some(([k, v]) => (cnt[k] || 0) < v);
     if (short) { aiFillRoster(tid, Lg.rules.activeMax); changed = true; }
-    if (!short && act.length < Lg.rules.activeMax - 1 && ['REGULAR_SEASON', 'PRESEASON', 'PLAYOFFS'].includes(Lg.meta.phase)) { fillToMax(tid, Lg.rules.activeMax - 1); changed = true; }
+    if (!short && act.length < Lg.rules.activeMax && ['REGULAR_SEASON', 'PRESEASON', 'PLAYOFFS'].includes(Lg.meta.phase) && !(Lg.meta.phase === 'PRESEASON')) { fillToMax(tid, Lg.rules.activeMax); changed = true; }
     if (act.length > Lg.rules.activeMax || changed) { trimActive(tid, Lg.rules.activeMax); changed = true; }
   }
   if (!user || Lg.settings.autoUser.depth || !Lg.teams[tid].depthLocked) autoDepth(tid, { keepUserOrder: user && Lg.teams[tid].depthLocked, list: changed ? null : ps });
@@ -134,9 +134,19 @@ export function aiCapCompliance(tid, s = capSeason()) {
     const rs = ps.map((p) => ({ p, pr: restructurePreview(p) })).filter((x) => x.pr && x.pr.saves > 1e6 && (x.p.contract.restructures || 0) < (guard > 15 ? 4 : 2)).sort((a, b) => b.pr.saves - a.pr.saves)[0];
     if (rs) { restructure(rs.p.pid); cap = teamCap(tid, s); continue; }
     // cut the worst value-for-money veteran with savings
-    const cuts = ps.map((p) => ({ p, d: deadMoneyIfCut(p) })).filter((x) => x.d.save > 1e6)
+    // never cut a franchise player or anyone whose dead money dwarfs the savings
+    const qb1 = Lg.teams[tid].depth.QB?.[0];
+    const cuts = ps.map((p) => ({ p, d: deadMoneyIfCut(p) })).filter((x) => x.d.save > 1e6 && x.p.pid !== qb1 && x.p.r.ovr < 86 && x.d.now <= x.d.save * 1.5)
       .sort((a, b) => (keepValue(a.p, tid) / Math.max(1, a.d.save)) - (keepValue(b.p, tid) / Math.max(1, b.d.save)));
     if (cuts[0]) { releasePlayer(cuts[0].p.pid); cap = teamCap(tid, s); continue; }
+    // last resort: more restructures, then any non-QB1 cut that still saves real money
+    const rs2 = ps.map((p) => ({ p, pr: restructurePreview(p) })).filter((x) => x.pr && x.pr.saves > 1e6 && (x.p.contract.restructures || 0) < 6).sort((a, b) => b.pr.saves - a.pr.saves)[0];
+    if (rs2) { restructure(rs2.p.pid); cap = teamCap(tid, s); continue; }
+    const cuts2 = ps.map((p) => ({ p, d: deadMoneyIfCut(p) })).filter((x) => x.d.save > 2e6 && x.p.pid !== qb1).sort((a, b) => (keepValue(a.p, tid) / a.d.save) - (keepValue(b.p, tid) / b.d.save));
+    if (cuts2[0]) { releasePlayer(cuts2[0].p.pid); cap = teamCap(tid, s); continue; }
+    // post-June 1 designation: spreads the dead money over two years so the cut actually clears space now
+    const cuts3 = ps.map((p) => ({ p, d: deadMoneyIfCut(p, { june1: true }) })).filter((x) => x.d.save > 3e6 && x.p.pid !== qb1).sort((a, b) => (keepValue(a.p, tid) / a.d.save) - (keepValue(b.p, tid) / b.d.save));
+    if (cuts3[0]) { releasePlayer(cuts3[0].p.pid, { june1: true }); cap = teamCap(tid, s); continue; }
     break;
   }
   return cap;
@@ -195,6 +205,10 @@ export function aiExtensions(tid) {
     const ask = playerAsk(p, tid);
     const space = teamCap(tid, p.contract.exp + 1).space;
     if (ask.apy > space * 0.6) continue;
+    // keep the books healthy two years out as well
+    const space2 = teamCap(tid, p.contract.exp + 2).space;
+    if (ask.apy > space2 * 0.7) continue;
+    if (p.contract.extendedFrom && p.contract.signed >= s - 1) continue; // already extended recently
     const yrs = clamp(ask.years + 1, 3, 5);
     signContract(p.pid, tid, { years: yrs, apy: ask.apy, gtd: Math.round(ask.apy * yrs * Math.max(ask.gtdPct, idealGtdPct(p)) / 10000) * 10000 }, { type: 'extend' });
   }
@@ -209,14 +223,15 @@ export function fillToMax(tid, target) {
   let act = mine.filter((p) => p.status === 'ACT').length;
   const tgt = { QB: 3, RB: 4, WR: 6, TE: 3, OT: 4, OG: 4, C: 2, EDGE: 5, DT: 5, LB: 5, CB: 6, S: 4, K: 1, P: 1, LS: 1 };
   let guard = 0;
-  while (act < target && guard++ < 10) {
+  while (act < target && guard++ < 70) {
     const cnt = {};
     for (const p of mine) if (p.status === 'ACT' && p.tid === tid) cnt[p.pos] = (cnt[p.pos] || 0) + 1;
     const pos = Object.keys(tgt).sort((a, b) => ((cnt[a] || 0) - tgt[a]) - ((cnt[b] || 0) - tgt[b]))[0];
     const psGuy = mine.find((p) => p.status === 'PS' && p.pos === pos && p.tid === tid);
     if (psGuy) { psGuy.status = 'ACT'; psGuy.contract = minDeal(psGuy, cs); act++; continue; }
     const fa = freeAgents().filter((p) => p.pos === pos).sort((a, b) => b.r.ovr - a.r.ovr)[0];
-    if (!fa || teamCap(tid, cs).space < minSalary(fa.exp ?? 0, cs)) break;
+    // a legal 53 comes first; cap issues get fixed with cuts/restructures afterward
+    if (!fa || (teamCap(tid, cs).space < minSalary(fa.exp ?? 0, cs) && act >= target - 4)) break;
     fa.tid = tid; fa.status = 'ACT'; fa.contract = minDeal(fa, cs); fa.yrsWithTeam = 0; mine.push(fa); act++;
     transaction('sign', `${Lg.teams[tid].abbr} signed ${fa.pos} ${fa.fn} ${fa.ln} (1 yr, min)`, { tids: [tid], pids: [fa.pid] });
   }

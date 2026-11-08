@@ -56,25 +56,69 @@ function h2hPct(st, a, group) {
   for (const o of group) { if (o === a) continue; const h = st[a].h2h[o]; if (h) { w += h[0] + h[2] * 0.5; n += h[0] + h[1] + h[2]; } }
   return n ? w / n : null;
 }
+function commonRec(st, block) {
+  // record in games against opponents every team in the block played
+  const sets = block.map((t) => new Set(st[t].opps));
+  const common = [...sets[0]].filter((o) => !block.includes(o) && sets.every((x) => x.has(o)));
+  if (common.length < 4) return null;
+  return block.map((t) => { let w = 0, n = 0; for (const o of common) { const h = st[t].h2h[o]; if (h) { w += h[0] + h[2] * 0.5; n += h[0] + h[1] + h[2]; } } return n ? w / n : 0; });
+}
 
-// rank a group of tied teams; division=true uses division tiebreak order
+// NFL tiebreaking procedure. Teams are grouped by win pct; each tied block is resolved step by step. When a step
+// separates out the best team(s), the remaining teams start the procedure over (two-club rules if two remain).
 export function breakTies(st, group, division) {
-  return [...group].sort((a, b) => {
-    const A = st[a], B = st[b];
-    if (A.pct !== B.pct) return B.pct - A.pct;
-    const ha = h2hPct(st, a, group), hb = h2hPct(st, b, group);
-    const allPlayed = group.every((x) => group.every((y) => x === y || st[x].h2h[y]));
-    if (ha != null && hb != null && (group.length === 2 || allPlayed) && ha !== hb) return hb - ha;
-    if (division && A.dpct !== B.dpct) return B.dpct - A.dpct;
-    if (division) { const c = commonPct(st, a, b); if (c && c[0] !== c[1]) return c[1] - c[0]; }
-    if (A.cpct !== B.cpct) return B.cpct - A.cpct;
-    if (!division) { const c = commonPct(st, a, b); if (c && c[0] !== c[1]) return c[1] - c[0]; }
-    if (A.sov !== B.sov) return B.sov - A.sov;
-    if (A.sos !== B.sos) return B.sos - A.sos;
-    const pdA = A.pf - A.pa, pdB = B.pf - B.pa;
-    if (pdA !== pdB) return pdB - pdA;
-    return a - b;
+  const sorted = [...group].sort((a, b) => st[b].pct - st[a].pct);
+  const out = [];
+  let i = 0;
+  while (i < sorted.length) {
+    let j = i;
+    while (j + 1 < sorted.length && Math.abs(st[sorted[j + 1]].pct - st[sorted[i]].pct) < 1e-9) j++;
+    out.push(...resolveBlock(st, sorted.slice(i, j + 1), division));
+    i = j + 1;
+  }
+  return out;
+}
+function resolveBlock(st, block, division) {
+  if (block.length <= 1) return block;
+  const best = bestOf(st, block, division);
+  return [best, ...resolveBlock(st, block.filter((t) => t !== best), division)];
+}
+function bestOf(st, block, division) {
+  if (block.length === 1) return block[0];
+  const two = block.length === 2;
+  const steps = [];
+  // 1. head-to-head (two clubs: if they played; 3+: in a division all play each other, for wild cards only a sweep counts)
+  steps.push((t) => {
+    if (two) { const h = st[t].h2h[block.find((x) => x !== t)]; return h ? (h[0] + h[2] * 0.5) / (h[0] + h[1] + h[2]) : null; }
+    if (division) return h2hPct(st, t, block);
+    const allPlayed = block.every((o) => o === t || st[t].h2h[o]);
+    if (!block.every((x) => block.every((y) => x === y || st[x].h2h[y]))) {
+      // sweep rule: a team that beat every other club advances; one that lost to all drops
+      const beatAll = block.every((o) => o === t || (st[t].h2h[o] && st[t].h2h[o][1] === 0 && st[t].h2h[o][2] === 0 && st[t].h2h[o][0] > 0));
+      return beatAll ? 1 : 0.5;
+    }
+    return allPlayed ? h2hPct(st, t, block) : null;
   });
+  if (division) steps.push((t) => st[t].dpct);
+  if (division) steps.push('common');
+  steps.push((t) => st[t].cpct);
+  if (!division) steps.push('common');
+  steps.push((t) => st[t].sov);
+  steps.push((t) => st[t].sos);
+  steps.push((t) => st[t].pf - st[t].pa);
+  steps.push((t) => st[t].pf);
+  for (const step of steps) {
+    let vals;
+    if (step === 'common') { const c = commonRec(st, block); if (!c) continue; vals = c; }
+    else vals = block.map(step);
+    if (vals.some((v) => v == null)) continue;
+    const mx = Math.max(...vals);
+    const top = block.filter((_, k) => Math.abs(vals[k] - mx) < 1e-9);
+    if (top.length === block.length) continue;
+    if (top.length === 1) return top[0];
+    return bestOf(st, top, division); // restart with the clubs still tied
+  }
+  return [...block].sort((a, b) => a - b)[0]; // coin toss
 }
 
 export function divisionOrder(st, conf, div) {

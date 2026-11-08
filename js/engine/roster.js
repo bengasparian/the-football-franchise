@@ -1,5 +1,5 @@
 // Depth charts and roster bookkeeping
-import { G, clamp } from './core.js';
+import { G, rnd, clamp } from './core.js';
 import { DEPTH_SLOTS, POSITIONS } from './const.js';
 
 const ALT = { QB: [], RB: ['FB', 'WR'], FB: ['RB', 'TE'], WR: ['RB', 'TE', 'CB'], TE: ['FB', 'OT'], OT: ['OG'], OG: ['C', 'OT'], C: ['OG'],
@@ -11,6 +11,7 @@ export function autoDepth(tid, { keepUserOrder = false, list = null } = {}) {
   const Lg = G.L;
   const t = Lg.teams[tid];
   const ps = (list || Object.values(Lg.players)).filter((p) => p.tid === tid && p.status === 'ACT');
+  ensureNumbers(tid, list);
   const depth = {};
   for (const pos of [...POSITIONS, 'KR', 'PR']) {
     if (pos === 'KR' || pos === 'PR') {
@@ -55,3 +56,28 @@ export function setDepth(tid, pos, pids) {
   return { ok: true };
 }
 void clamp;
+
+// NFL jersey number ranges by position (2023+ rules). Rookies and new signings get a free number in range.
+const NUM_RANGES = {
+  QB: [[0, 19]], RB: [[0, 49], [80, 89]], FB: [[0, 49], [80, 89]], WR: [[0, 49], [80, 89]], TE: [[0, 49], [80, 89]],
+  OT: [[50, 79]], OG: [[50, 79]], C: [[50, 79]], DT: [[50, 79], [90, 99]], EDGE: [[0, 59], [90, 99]], LB: [[0, 59], [90, 99]],
+  CB: [[0, 49]], S: [[0, 49]], K: [[0, 49], [90, 99]], P: [[0, 49], [90, 99]], LS: [[40, 69], [80, 99]],
+};
+export function ensureNumbers(tid, list = null) {
+  const Lg = G.L;
+  const mine = (list || Object.values(Lg.players)).filter((p) => p.tid === tid);
+  const used = new Map();
+  for (const p of mine) if (p.jn != null && !used.has(p.jn)) used.set(p.jn, p.pid);
+  for (const p of mine) {
+    if (p.jn != null) continue;
+    const opts = [];
+    for (const [a, b] of NUM_RANGES[p.pos] || [[0, 99]]) for (let n = a; n <= b; n++) if (!used.has(n)) opts.push(n);
+    if (!opts.length) continue;
+    // favor classic numbers for the position (low teens for QBs, 80s for TEs, 90s for pass rushers)
+    const fav = { QB: [1, 19], WR: [10, 19], TE: [80, 89], EDGE: [90, 99], DT: [90, 99], RB: [20, 39], CB: [20, 39], S: [20, 39], LB: [40, 59], K: [1, 9], P: [1, 9] }[p.pos];
+    const pref = fav ? opts.filter((n) => n >= fav[0] && n <= fav[1]) : [];
+    const pool = pref.length ? pref : opts;
+    p.jn = pool[Math.floor(rnd() * pool.length)];
+    used.set(p.jn, p.pid);
+  }
+}

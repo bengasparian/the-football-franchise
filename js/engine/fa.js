@@ -4,11 +4,33 @@ import { marketValue, playerAsk, signContract, teamCap, capSeason, idealYears, i
 import { rosterStrength } from './league.js';
 import { teamMode } from './trade.js';
 
+// Live free agency: 5 days. Each day opens with a 10 real-minute negotiating window where offers pile up but nobody
+// signs; after that, players start picking teams in real time (the UI ticks every few seconds). "Next day" plays the
+// rest of the day out instantly.
+export const FA_DAYS = 5;
+export const FA_WINDOW_MS = 10 * 60 * 1000;
 export function startFreeAgency() {
   const Lg = G.L;
-  Lg.fa = { day: 0, maxDay: 30, offers: {}, log: [] };
-  // AI interest per FA: count of teams likely to bid (for player leverage)
+  Lg.fa = { day: 0, maxDay: FA_DAYS, offers: {}, log: [], dayStart: Date.now() };
   for (const p of freeAgents()) p.faDay0 = Lg.meta.season;
+  faDay({ decide: false }); // day 1 opens: AI teams put their first offers on the table
+}
+export function faStatus() {
+  const fa = G.L.fa;
+  if (!fa) return null;
+  const left = Math.max(0, FA_WINDOW_MS - (Date.now() - (fa.dayStart || 0)));
+  return { day: fa.day, maxDay: fa.maxDay, windowLeftMs: left, live: left === 0 };
+}
+// Called by the client every few seconds during free agency.
+export function faTick() {
+  const Lg = G.L;
+  const fa = Lg.fa;
+  if (!fa || Lg.meta.phase !== 'FREE_AGENCY') return { signed: [] };
+  const st = faStatus();
+  const before = fa.log.length;
+  if (rnd() < 0.35) bidRound(fa, { perTeam: 1, teamFrac: 0.25 });
+  if (st.live) decideRound(fa, { limit: 2 + Math.floor(rnd() * 3), live: true });
+  return { signed: fa.log.slice(before), status: st };
 }
 export function freeAgents() { return Object.values(G.L.players).filter((p) => p.tid === -1 && p.status === 'FA'); }
 
@@ -81,20 +103,27 @@ export function userOffer(tid, pid, offer) {
   return { ok: false, message: `${p.fn} ${p.ln} declined. Asking about ${Math.round(ask.apy / 1e5) / 10}M per year.`, ask };
 }
 
-// AI teams bid on free agents, players make decisions
-export function faDay() {
+// Advance a day: whatever was left of the current day plays out, then the next day opens with fresh AI offers.
+export function faDay({ decide = true } = {}) {
   const Lg = G.L;
   const fa = Lg.fa;
   if (!fa) return;
+  if (decide && fa.day > 0) decideRound(fa, { limit: Infinity });
   fa.day++;
+  fa.dayStart = Date.now();
+  bidRound(fa, { perTeam: fa.day <= 2 ? 3 : 2, teamFrac: 1 });
+}
+
+export function faFinish() { const fa = G.L.fa; if (fa) { decideRound(fa, { limit: Infinity }); fa.offers = {}; } }
+
+function bidRound(fa, { perTeam = 2, teamFrac = 1 } = {}) {
+  const Lg = G.L;
   const cs = capSeason();
   const agg = Lg.settings.sliders.aiFreeAgencyAggression ?? 1;
   const pool = freeAgents().sort((a, b) => b.r.ovr - a.r.ovr).slice(0, 320);
   const posIdx = buildPosIdx();
   const capCache = {};
   const space0 = (tid) => (capCache[tid] ??= teamCap(tid, cs).space);
-  // AI bidding. Teams go in a random order each day, and each player draws a realistic number of suitors
-  // (a star gets a handful of serious bidders, not the whole league).
   const suitors = {};
   for (const [pid, offs] of Object.entries(fa.offers)) suitors[pid] = offs.filter((o) => !o.user).length;
   const maxSuitors = (p) => (['K', 'P', 'LS', 'FB'].includes(p.pos) ? 2 : p.r.ovr >= 86 ? 6 : p.r.ovr >= 80 ? 4 : 3);
@@ -102,18 +131,19 @@ export function faDay() {
   for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
   for (const t of order) {
     if (Lg.meta.userTids.includes(t.tid)) continue;
-    let space = space0(t.tid) - 18e6; // keep room for rookies & in-season moves
+    if (teamFrac < 1 && rnd() > teamFrac) continue;
+    // keep room for rookies and in-season moves, and make sure next year's books can carry the deal too
+    let space = Math.min(space0(t.tid) - 18e6, teamCap(t.tid, cs + 1).space - 25e6);
     const mode = teamMode(t.tid);
     const n = Object.values(Lg.players).filter((p) => p.tid === t.tid).length;
     if (n >= Lg.rules.offseasonMax) continue;
     let bids = 0;
     for (const p of pool) {
-      if (bids >= (fa.day <= 3 ? 3 : 2)) break;
+      if (bids >= perTeam) break;
       if ((fa.offers[p.pid] || []).some((o) => o.tid === t.tid)) continue;
       if ((suitors[p.pid] || 0) >= maxSuitors(p)) continue;
       const role = roleOnTeam(p, t.tid, posIdx);
       if (role < 0.5 && p.r.ovr >= 68) continue;
-      // specialists: only chase one who is a clear upgrade on the current starter
       if (['K', 'P', 'LS'].includes(p.pos) && Math.max(0, ...(posIdx[t.tid]?.[p.pos] || [])) > p.r.ovr - 5) continue;
       const a = age(p, cs);
       if (mode === 'rebuild' && a >= 30 && p.r.ovr < 85) continue;
@@ -122,7 +152,7 @@ export function faDay() {
       const interest = role * (mode === 'contend' ? 1.2 : 1) * agg * (0.5 + rnd() * 0.8);
       if (interest < 0.55) continue;
       const maxA = capFor(cs) * ({ QB: 0.228, EDGE: 0.17, WR: 0.15, DT: 0.135 }[p.pos] ?? 0.13);
-      const apy = Math.round(Math.min(maxA, mv * clamp(gauss(1.0, 0.08) + (p.r.ovr >= 85 ? 0.05 : 0) + (fa.day <= 2 ? 0.04 : -0.01 * fa.day), 0.7, 1.25)) / 10000) * 10000;
+      const apy = Math.round(Math.min(maxA, mv * clamp(gauss(1.0, 0.08) + (p.r.ovr >= 85 ? 0.05 : 0) + (fa.day <= 2 ? 0.04 : -0.02 * fa.day), 0.7, 1.25)) / 10000) * 10000;
       const yrs = clamp(idealYears(p) + Math.round(gauss(0, 0.7)), 1, 5);
       const gtd = Math.round(apy * yrs * clamp(idealGtdPct(p) + gauss(0, 0.06), 0, 0.8) / 10000) * 10000;
       (fa.offers[p.pid] ||= []).push({ tid: t.tid, apy, years: yrs, gtd, day: fa.day });
@@ -131,32 +161,41 @@ export function faDay() {
       bids++;
     }
   }
-  // decisions
+}
+
+function decideRound(fa, { limit = Infinity, live = false } = {}) {
+  const Lg = G.L;
+  const cs = capSeason();
+  const posIdx = buildPosIdx();
+  const capCache = {};
+  const space0 = (tid) => (capCache[tid] ??= teamCap(tid, cs).space);
+  let pool = freeAgents().filter((p) => fa.offers[p.pid]?.length);
+  if (live) pool = pool.sort(() => rnd() - 0.5);
+  let done = 0;
   for (const p of pool) {
-    const offers = fa.offers[p.pid];
-    if (!offers || !offers.length) continue;
-    // keep each team's latest offer
+    if (done >= limit) break;
     const latest = {};
-    for (const o of offers) latest[o.tid] = o;
+    for (const o of fa.offers[p.pid]) latest[o.tid] = o;
     const list = Object.values(latest).filter((o) => space0(o.tid) >= o.apy * 0.85);
     if (!list.length) continue;
     const scored = list.map((o) => ({ o, sc: offerScore(p, o, posIdx) })).sort((a, b) => b.sc - a.sc);
     const best = scored[0];
-    // stars take a few days (bidding wars), depth players sign faster
-    const patience = p.r.ovr >= 85 ? 3 : p.r.ovr >= 78 ? 2 : 1;
+    // stars let a bidding war play out for a day or two; depth players sign quickly
+    const patience = p.r.ovr >= 85 ? 2 : p.r.ovr >= 78 ? 1 : 0;
     const firstDay = Math.min(...list.map((o) => o.day));
-    const ready = fa.day - firstDay >= patience || list.length >= 4 || best.sc > 1.15;
-    const threshold = 0.82 - fa.day * 0.012;
-    if (ready && best.sc >= threshold) {
-      signContract(p.pid, best.o.tid, best.o);
-      if (p.contract) p.contract.faSigned = true;
-      capCache[best.o.tid] = undefined;
-      ((posIdx[best.o.tid] ||= {})[p.pos] ||= []).push(p.r.ovr);
-      delete fa.offers[p.pid];
-      fa.log.push({ day: fa.day, pid: p.pid, tid: best.o.tid, apy: best.o.apy, years: best.o.years, user: !!best.o.user });
-      if (best.o.user) news(`${p.fn} ${p.ln} accepted your offer!`, { type: 'sign', tids: [best.o.tid], pids: [p.pid], user: true });
-      for (const o of list) if (o.user && o.tid !== best.o.tid) news(`${p.fn} ${p.ln} chose ${Lg.teams[best.o.tid].abbr} over your offer.`, { type: 'sign', tids: [o.tid], pids: [p.pid], user: true });
-    }
+    const ready = fa.day - firstDay >= patience || list.length >= 4 || best.sc > 1.15 || fa.day >= fa.maxDay;
+    const threshold = 0.82 - fa.day * 0.03;
+    if (!(ready && best.sc >= threshold)) continue;
+    if (live && rnd() < 0.5) continue; // live: not everyone decides at the same moment
+    signContract(p.pid, best.o.tid, best.o);
+    if (p.contract) p.contract.faSigned = true;
+    capCache[best.o.tid] = undefined;
+    ((posIdx[best.o.tid] ||= {})[p.pos] ||= []).push(p.r.ovr);
+    delete fa.offers[p.pid];
+    fa.log.push({ day: fa.day, pid: p.pid, tid: best.o.tid, apy: best.o.apy, years: best.o.years, user: !!best.o.user, t: Date.now() });
+    if (best.o.user) news(`${p.fn} ${p.ln} accepted your offer!`, { type: 'sign', tids: [best.o.tid], pids: [p.pid], user: true });
+    for (const o of list) if (o.user && o.tid !== best.o.tid) news(`${p.fn} ${p.ln} chose ${Lg.teams[best.o.tid].abbr} over your offer.`, { type: 'sign', tids: [o.tid], pids: [p.pid], user: true });
+    done++;
   }
 }
 

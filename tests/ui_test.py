@@ -12,7 +12,7 @@ async def main():
         await pg.screenshot(path='/tmp/s_start.png')
         await pg.click('[data-act=pickTeam][data-abbr=BUF]')
         await pg.click('[data-act=createLeague]')
-        await pg.wait_for_selector('.hub', timeout=60000)
+        await pg.wait_for_selector('.hub-grid', timeout=60000)
         await pg.wait_for_timeout(1200)
         # tutorial: walk through every step
         await pg.wait_for_selector('#tour .tour-box', timeout=5000)
@@ -21,11 +21,11 @@ async def main():
         while await pg.query_selector('#tourNext') and n < 20:
             if n == 1: await pg.screenshot(path='/tmp/s_tour1.png')
             await pg.click('#tourNext'); await pg.wait_for_timeout(150); n += 1
-        if n != 10: errors.append(f'tour steps {n}')
+        if n != 11: errors.append(f'tour steps {n}')
         if await pg.query_selector('#tour'): errors.append('tour still open')
         await pg.screenshot(path='/tmp/s_home.png', full_page=False)
         await pg.click('#helpBtn'); await pg.wait_for_timeout(400); await pg.screenshot(path='/tmp/s_help.png'); await pg.keyboard.press('Escape')
-        routes = ['roster','depth','schedule','standings','stats','teams','news','history','cap','staff','owner','trade','finder','offers','fa','draft','rules','settings','online']
+        routes = ['roster','depth','schedule','standings','recap','awards','stats','teams','news','history','cap','staff','owner','trade','finder','offers','fa','draft','rules','franchise','settings','online']
         for r in routes:
             await pg.goto(URL + '#/' + r); await pg.wait_for_timeout(700)
             txt = await pg.inner_text('#main')
@@ -44,12 +44,18 @@ async def main():
         await pg.wait_for_function("!document.getElementById('busy').classList.contains('on')", timeout=60000)
         await pg.wait_for_timeout(600)
         await pg.goto(URL + '#/schedule'); await pg.wait_for_timeout(600)
-        await pg.click('[data-act=schedView][data-v=league]'); await pg.wait_for_timeout(600)
-        cards = await pg.query_selector_all('.gamecard')
+        cards = await pg.query_selector_all('.gcard')
         if cards:
             await cards[0].click(); await pg.wait_for_timeout(800)
             await pg.screenshot(path='/tmp/s_box.png')
             await pg.keyboard.press('Escape')
+        await pg.goto(URL + '#/depth'); await pg.wait_for_timeout(600)
+        await pg.click('.slot >> nth=1'); await pg.wait_for_timeout(500)
+        await pg.screenshot(path='/tmp/s_depth.png')
+        await pg.goto(URL + '#/recap'); await pg.wait_for_timeout(600); await pg.screenshot(path='/tmp/s_recap.png')
+        await pg.goto(URL + '#/awards'); await pg.wait_for_timeout(600); await pg.screenshot(path='/tmp/s_awards.png')
+        await pg.goto(URL + '#/history'); await pg.wait_for_timeout(600); await pg.screenshot(path='/tmp/s_hist.png')
+        await pg.goto(URL + '#/home'); await pg.wait_for_timeout(800); await pg.screenshot(path='/tmp/s_home2.png')
         # standings playoff view
         await pg.goto(URL + '#/standings'); await pg.wait_for_timeout(500)
         await pg.click('[data-act=standView][data-v=playoff]'); await pg.wait_for_timeout(400)

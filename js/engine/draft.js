@@ -3,6 +3,7 @@ import { G, rnd, gauss, clamp, interp, wpick, pick, nextId, news, transaction, a
 import { FIRST, LAST, COLLEGES } from './names.js';
 import { genAttrs, computeOvr, projectPeak, potLabel } from './ratings.js';
 import { genPersonality } from './personality.js';
+import { rookieDev, initLongevity } from './dev.js';
 import { rookieContract } from './contracts.js';
 import { autoDepth } from './roster.js';
 
@@ -21,7 +22,9 @@ export function genDraftClass(s, n = 430) {
     let tal = interp([[0, 78.5], [0.01, 76.5], [0.03, 73.5], [0.08, 69.5], [0.2, 64], [0.4, 59], [0.65, 54], [1, 45]], q) + gauss(0, 2.3);
     if (ps === 'K' || ps === 'P' || ps === 'LS') tal -= 6;
     if (ps === 'FB') tal -= 5;
+    // eligibility: 3 years removed from high school, so 20 at the youngest; most are 21-23
     const a = Math.round(clamp(gauss(21.9, 0.9), 20, 25));
+    const colYrs = clamp(a - 18 + (rnd() < 0.3 ? 1 : 0), 3, 5); // seasons played (incl. redshirt/5th years)
     const [h0, w0] = HT_WT[ps];
     const ht = Math.round(gauss(h0, 1.6)), wt = Math.round(gauss(w0, w0 * 0.045));
     const p = {
@@ -34,16 +37,39 @@ export function genDraftClass(s, n = 430) {
     const attrs = genAttrs(ps, disp, { ageY: a, noise: 4 });
     p.r = { ovr: computeOvr(ps, attrs), a: attrs, tal: clamp(tal, 30, 90), hist: [] };
     p.pers = genPersonality(p, { age: a });
-    const upside = gauss(0, 4) + (p.pers.work - 0.5) * 6;
-    p.r.pot = clamp(projectPeak(ps, p.r.tal, a, p.pers.work) + upside, p.r.tal, 99);
-    p.r.potEst = clamp(p.r.pot + gauss(0, 5), 30, 99);
+    // what the league sees vs. what's really there: most prospects are about who they look like, but some
+    // highly-rated players never pan out (busts) and some late picks have far more in the tank (gems)
+    let surprise = gauss(0, 2.5);
+    const roll = rnd();
+    if (roll < 0.11) surprise -= 7 + rnd() * 8; // bust
+    else if (roll < 0.17) surprise += 6 + rnd() * 9; // gem
+    const seen = projectPeak(ps, p.r.tal, a, p.pers.work) + gauss(0, 2.5) + (p.pers.work - 0.5) * 4;
+    p.r.pot = clamp(seen + surprise, p.r.tal, 99);
+    if (surprise < -6) p.r.tal = clamp(p.r.tal - rnd() * 3, 30, 90);
+    p.r.potEst = clamp(seen + surprise * 0.25 + gauss(0, 3), 30, 99);
     p.r.ovrStart = p.r.ovr;
-    // consensus media grade (imperfect): mixes current talent and upside, with noise
-    p.scout = { grade: p.r.tal * 0.65 + p.r.pot * 0.35 + gauss(0, 4.5) + (ps === 'QB' ? 0.5 : 0) - ({ RB: 2, FB: 7, K: 11, P: 12, LS: 18 }[ps] || 0), lvl: {} };
+    p.dev = rookieDev(p);
+    p.lon = initLongevity(p);
+    p.colYrs = colYrs;
+    // consensus media grade (imperfect): built on what scouts can see, not the hidden truth
+    p.scout = { grade: p.r.tal * 0.65 + (seen + surprise * 0.2) * 0.35 + gauss(0, 3.5) + (ps === 'QB' ? 0.5 : 0) - ({ RB: 2, FB: 7, K: 11, P: 12, LS: 18 }[ps] || 0), lvl: {} };
     p.combine = combineFor(p);
     out.push(p);
     Lg.players[p.pid] = p;
   }
+  // a generational talent: roughly one every 15 drafts
+  if (rnd() < 1 / 15) {
+    const g = out.filter((p) => ['QB', 'EDGE', 'WR', 'OT', 'CB', 'RB', 'DT', 'S', 'LB', 'TE'].includes(p.pos)).sort((a, b) => b.r.tal - a.r.tal)[0];
+    if (g) {
+      g.gen = true; g.dev = 'Elite'; g.lon = Math.max(g.lon, 80);
+      g.r.tal = clamp(84 + rnd() * 4, 84, 90); g.r.pot = clamp(97 + rnd() * 2, 97, 99); g.r.potEst = g.r.pot - rnd();
+      const attrs = genAttrs(g.pos, g.r.tal, { ageY: age(g, s), noise: 3 });
+      g.r.a = attrs; g.r.ovr = computeOvr(g.pos, attrs); g.r.ovrStart = g.r.ovr;
+      g.pers.work = Math.max(g.pers.work, 0.75);
+      g.scout.grade = 99;
+    }
+  }
+  for (const p of out) p.col = collegeStats(p, s);
   // consensus board ranking
   out.sort((a, b) => b.scout.grade - a.scout.grade);
   out.forEach((p, i) => { p.scout.rank = i + 1; });
@@ -124,6 +150,17 @@ export function computeDraftOrder(s, standings, playoffResults) {
     for (const pk of Lg.picks.filter((x) => x.s === s && x.rd === rd && x.comp)) order.push(pk);
   }
   order.forEach((pk, i) => { pk.no = i + 1; });
+  // conditional picks, e.g. "the earlier of Dallas' own 1st or the one they got from Green Bay"
+  for (const pk of order.filter((x) => x.cond?.startsWith('earlierOf:'))) {
+    const tids = pk.cond.split(':')[1].split(',').map(Number);
+    const pair = tids.map((t) => order.find((x) => x.rd === pk.rd && x.orig === t)).filter(Boolean);
+    if (pair.length !== 2) { delete pk.cond; continue; }
+    const holder = pk.tid, other = pair.find((x) => x !== pk) ?? pair[0];
+    const otherOwner = other.tid === holder ? pk.tid : other.tid;
+    const [early, late] = pair.sort((a, b) => a.no - b.no);
+    early.tid = holder; late.tid = otherOwner;
+    delete pk.cond; delete other.cond;
+  }
   Lg.draftOrder ||= {};
   Lg.draftOrder[s] = order.map((p) => p.id);
   return order;
@@ -137,7 +174,35 @@ export function startDraft() {
     computeDraftOrder(s, st, Lg.playoffElim || []);
   }
   Lg.draft = { s, idx: 0, log: [], done: false };
+  resetClock();
   for (const t of Lg.teams) t.scoutPts = (t.scoutPts || 0);
+}
+// Live draft clock: every team gets up to 2 minutes. CPU teams usually turn their card in before time runs out;
+// a user who lets the clock expire gets his scouts' best-available pick.
+export const PICK_MS = 2 * 60 * 1000;
+function resetClock() { const d = G.L.draft; if (!d) return; d.pickStart = Date.now(); d.aiDelay = Math.round((45 + rnd() * 75) * 1000); }
+export function draftClock() {
+  const d = G.L.draft;
+  if (!d || d.done) return null;
+  const el = Date.now() - (d.pickStart || Date.now());
+  return { leftMs: Math.max(0, PICK_MS - el), userOnClock: !!userOnClock() };
+}
+export function draftTick() {
+  const Lg = G.L, d = Lg.draft;
+  if (!d || d.done) return { picks: 0 };
+  const el = Date.now() - (d.pickStart || Date.now());
+  const up = userOnClock();
+  if (up ? el >= PICK_MS : el >= d.aiDelay) { draftCurrentPick(null); return { picks: 1 }; }
+  return { picks: 0 };
+}
+export function simDraftPicks(n) { let k = 0; while (k < n && G.L.draft && !G.L.draft.done) { draftCurrentPick(null); k++; } return { picks: k }; }
+export function simDraftRound() {
+  const Lg = G.L, d = Lg.draft;
+  if (!d || d.done) return { picks: 0 };
+  const cur = Lg.picks.find((x) => x.id === Lg.draftOrder[d.s][d.idx])?.rd;
+  let k = 0;
+  while (!d.done) { const pk = Lg.picks.find((x) => x.id === Lg.draftOrder[d.s][d.idx]); if (!pk || pk.rd !== cur) break; draftCurrentPick(null); k++; }
+  return { picks: k };
 }
 
 function teamNeeds(tid) {
@@ -196,6 +261,7 @@ export function draftCurrentPick(pidChoice = null) {
   else p = aiChoose(pk.tid, avail, pk.no);
   makeSelection(pk, p);
   d.idx++;
+  resetClock();
   if (d.idx >= order.length) finishDraft();
   return { ok: true, pick: pk.no, pid: p.pid, tid: pk.tid };
 }
@@ -288,4 +354,37 @@ export function hashGauss(pid, tid) {
   h = Math.imul(h ^ (h >>> 13), 2246822507);
   const u2 = ((h >>> 0) % 100000 + 0.5) / 100000;
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+
+// Simulated college career: production follows talent, role grows each year (freshmen rarely start).
+const CONF_STR = { Alabama: 1, Georgia: 1, 'Ohio State': 1, LSU: 0.95, Michigan: 0.95, Texas: 0.95, Oregon: 0.95, 'Penn State': 0.9, 'Notre Dame': 0.9 };
+export function collegeStats(p, draftS) {
+  const yrs = p.colYrs || 3;
+  const out = [];
+  const t = p.r.tal + (p.r.pot - p.r.tal) * 0.3;
+  const q = clamp((t - 45) / 40, 0, 1.2); // 0 = fringe, 1 = elite prospect
+  const lvl = CONF_STR[p.college] ?? (0.75 + rnd() * 0.15);
+  for (let i = 0; i < yrs; i++) {
+    const y = draftS - yrs + i;
+    const role = clamp(0.25 + i * 0.3 + q * 0.25 - (i === 0 ? 0.15 : 0) + gauss(0, 0.12), 0.05, 1);
+    const g = Math.round(clamp(gauss(12, 1.3) - (rnd() < 0.08 ? 6 : 0), 2, 15));
+    const f = role * g / 12 * (0.85 + q * 0.4) * (1.1 - (lvl - 0.75) * 0.6);
+    const n = (x, sd = 0.18) => Math.max(0, Math.round(x * (1 + gauss(0, sd))));
+    const st = { y, g, gs: Math.round(g * clamp(role * 1.1, 0, 1)) };
+    switch (p.pos) {
+      case 'QB': { const att = n(380 * f); st.cmp = n(att * (0.58 + q * 0.1), 0.04); st.att = att; st.yds = n(att * (7.2 + q * 1.8), 0.08); st.td = n(att * (0.045 + q * 0.03)); st.int = n(att * (0.03 - q * 0.012)); st.ryds = n(150 * f + (p.r.a.spd - 60) * 6 * f, 0.4); break; }
+      case 'RB': case 'FB': { const car = n((p.pos === 'FB' ? 25 : 190) * f); st.car = car; st.ryds = n(car * (4.4 + q * 1.8), 0.1); st.rtd = n(car * (0.05 + q * 0.04)); st.rec = n(22 * f); st.recyds = n(st.rec * 8.5); break; }
+      case 'WR': case 'TE': { const rec = n((p.pos === 'TE' ? 38 : 60) * f); st.rec = rec; st.recyds = n(rec * (12 + q * 4), 0.1); st.rectd = n(rec * (0.08 + q * 0.06)); break; }
+      case 'OT': case 'OG': case 'C': { st.sacksAllowed = n(clamp(5 - q * 4, 0.3, 6) * role, 0.5); st.pancakes = n(30 * f * (0.6 + q)); break; }
+      case 'EDGE': case 'DT': { st.tkl = n(42 * f); st.tfl = n((p.pos === 'EDGE' ? 11 : 8) * f * (0.6 + q * 0.7)); st.sck = n((p.pos === 'EDGE' ? 7 : 4) * f * (0.5 + q * 0.9), 0.3); st.ff = n(1.2 * f, 0.6); break; }
+      case 'LB': { st.tkl = n(85 * f); st.tfl = n(8 * f * (0.6 + q * 0.6)); st.sck = n(3 * f * (0.5 + q), 0.4); st.int = n(1 * f * (0.5 + q), 0.7); st.pd = n(4 * f * (0.6 + q)); break; }
+      case 'CB': case 'S': { st.tkl = n((p.pos === 'S' ? 62 : 45) * f); st.int = n(2.5 * f * (0.4 + q), 0.5); st.pd = n(9 * f * (0.5 + q * 0.8)); break; }
+      case 'K': { st.fga = n(20 * f + 4); st.fgm = Math.min(st.fga, n(st.fga * (0.7 + q * 0.18), 0.05)); st.lng = Math.round(clamp(45 + q * 10 + gauss(0, 3), 40, 62)); break; }
+      case 'P': { st.pnt = n(55 * f + 10); st.avg = Math.round((41 + q * 5 + gauss(0, 1)) * 10) / 10; break; }
+      case 'LS': { st.g = g; break; }
+    }
+    out.push(st);
+  }
+  return out;
 }

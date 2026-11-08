@@ -10,13 +10,14 @@ const signContractSafe = (p, ask) => signContract(p.pid, p.tid, { years: Math.ma
 import { computeStandings, playoffSeeds, divisionOrder } from './standings.js';
 import { aiWeekly, aiResignPhase, aiTenders, aiCapCompliance, aiCutdown, aiOffseasonFill, aiExtensions, fillToMax } from './ai.js';
 import { aiTradeRound, aiOffersToUser } from './trade.js';
-import { startFreeAgency, faDay, freeAgents, aiFillRoster } from './fa.js';
+import { startFreeAgency, faDay, faFinish, freeAgents, aiFillRoster } from './fa.js';
 import { startDraft, simDraftToUser, genDraftClass, computeDraftOrder, finishDraft } from './draft.js';
 import { seasonAwards, sbMvp, processRetirements, hallOfFame } from './awards.js';
 import { startLeagueMeeting, tallyVotes } from './rulesvote.js';
 import { aiCoachingCarousel } from './coaches.js';
 import { recordHomeGame, updateFans, closeSeasonFinances, setOwnerGoals, evaluateOwner } from './finance.js';
 import { generateSchedule } from './schedule.js';
+import { cpuRelocationCheck } from './relocation.js';
 import { addSeasonPicks, setExpectations } from './league.js';
 import { autoDepth, rosterCounts } from './roster.js';
 import { weeklyEvents } from './events.js';
@@ -141,8 +142,10 @@ function afterWeek() {
     updateMorale(marketValue);
     if (m.week % 2 === 0) checkUnrest(marketValue);
     if (m.week <= Lg.rules.tradeDeadlineWeek) {
-      aiTradeRound(m.week >= Lg.rules.tradeDeadlineWeek - 2 ? 0.55 : 0.2);
-      if (m.week >= Lg.rules.tradeDeadlineWeek - 1) aiTradeRound(0.4);
+      // most deals happen in the two weeks before the deadline
+      const dl = Lg.rules.tradeDeadlineWeek;
+      aiTradeRound(m.week >= dl - 2 ? 0.8 : m.week >= 4 ? 0.35 : 0.15, 6);
+      if (m.week >= dl - 1) { aiTradeRound(0.7, 6); aiTradeRound(0.5, 6); }
       aiOffersToUser();
     }
     if (m.week === 12 || m.week === 15) for (const t of Lg.teams) aiExtensions(t.tid);
@@ -189,20 +192,34 @@ function processWaivers() {
 }
 
 // ---------- preseason
+// Three exhibition games per team, scheduled up front so they show on the schedule. Starters barely play.
+export function ensurePreseasonGames() {
+  const Lg = G.L;
+  const m = Lg.meta;
+  if (Lg.games.some((g) => g.type === 'PRE' && g.s === m.season)) return;
+  const n = Lg.rules.preseasonGames || 3;
+  const met = new Set();
+  for (let w = 1; w <= n; w++) {
+    let ids, tries = 0, ok = false;
+    while (!ok && tries++ < 50) {
+      ids = shuffle(Lg.teams.map((t) => t.tid));
+      ok = true;
+      for (let i = 0; i < 32; i += 2) if (met.has(`${Math.min(ids[i], ids[i + 1])}-${Math.max(ids[i], ids[i + 1])}`) || Lg.teams[ids[i]].div === Lg.teams[ids[i + 1]].div && Lg.teams[ids[i]].conf === Lg.teams[ids[i + 1]].conf) { ok = false; break; }
+    }
+    for (let i = 0; i < 32; i += 2) {
+      met.add(`${Math.min(ids[i], ids[i + 1])}-${Math.max(ids[i], ids[i + 1])}`);
+      Lg.games.push({ gid: nextId('g'), s: m.season, w, type: 'PRE', h: ids[i], a: ids[i + 1], played: false });
+    }
+  }
+}
 function simPreseasonWeek() {
   const Lg = G.L;
   const m = Lg.meta;
   if (m.week === 0) m.week = 1;
   const n = Lg.rules.preseasonGames || 3;
   if (m.week > n) return finishPreseason();
-  // random matchups
-  const ids = shuffle(Lg.teams.map((t) => t.tid));
-  for (let i = 0; i < 32; i += 2) {
-    const g = { gid: nextId('g'), s: m.season, w: m.week, type: 'PRE', h: ids[i], a: ids[i + 1], played: false };
-    // starters barely play in preseason: simulate with backups by temporarily treating as regular sim
-    Lg.games.push(g);
-    playGame(g);
-  }
+  ensurePreseasonGames();
+  for (const g of Lg.games.filter((x) => x.type === 'PRE' && x.s === m.season && x.w === m.week && !x.played)) playGame(g);
   weeklyInjuryUpdate();
   // camp battles: young players gain small bumps
   for (const p of Object.values(Lg.players)) if (p.tid >= 0 && age(p) <= 24 && rnd() < 0.08) { setOvr(p, clamp(p.r.ovr + 1, 25, 99)); p.r.ovrStart = p.r.ovr; }
@@ -220,11 +237,17 @@ function finishPreseason() {
     }
   }
   for (const t of Lg.teams) {
-    if (!isUser(t.tid) || Lg.settings.autoUser.roster) { aiCutdown(t.tid); aiCapCompliance(t.tid); fillToMax(t.tid, Lg.rules.activeMax); }
+    if (!isUser(t.tid) || Lg.settings.autoUser.roster) { aiCutdown(t.tid); aiCapCompliance(t.tid); fillToMax(t.tid, Lg.rules.activeMax); aiCapCompliance(t.tid); }
+    else {
+      // every team opens the season with a full 53: fill any open spots with the best available minimum-salary players
+      const before = rosterCounts(t.tid).ACT;
+      if (before < Lg.rules.activeMax) { fillToMax(t.tid, Lg.rules.activeMax); const added = rosterCounts(t.tid).ACT - before; if (added > 0) news(`Your roster had open spots, so ${added} free agent${added > 1 ? 's were' : ' was'} signed to minimum deals to reach ${Lg.rules.activeMax}.`, { type: 'system', tids: [t.tid], user: true }); }
+    }
     aiWeekly(t.tid);
+    if (!isUser(t.tid) || Lg.settings.autoUser.roster) fillToMax(t.tid, Lg.rules.activeMax);
   }
   // remove preseason games' boxes to save space
-  for (const g of Lg.games) if (g.type === 'PRE' && g.s === m.season) delete g.box;
+  for (const g of Lg.games) if (g.type === 'PRE' && g.s === m.season && g.box) g.box = { scoring: g.box.scoring, tm: g.box.tm };
   m.phase = 'REGULAR_SEASON'; m.week = 1;
   for (const p of Object.values(Lg.players)) if (p.r) p.r.ovrStart = p.r.ovr;
   news(`The ${m.season} regular season kicks off!`, { type: 'system', big: true });
@@ -316,6 +339,8 @@ export function superBowlNumeral(s) {
 function enterSeasonEnd() {
   const Lg = G.L;
   const m = Lg.meta;
+  // unused cap rolls into next year (computed on the season that just ended, before the league year turns)
+  for (const t of Lg.teams) { const c = teamCap(t.tid, m.season); t.rollover[m.season + 1] = Math.max(0, Math.min(c.space, 45e6)); }
   m.phase = 'SEASON_END';
   const st = Lg.standingsCache || computeStandings();
   closeSeasonFinances();
@@ -337,6 +362,7 @@ function enterSeasonEnd() {
   };
   offseasonProgression();
   processRetirements();
+  cpuRelocationCheck();
   hallOfFame();
   // trim memory: drop box scores older than this season (keep playoff scoring summaries)
   for (const g of Lg.games) if (g.box && g.s <= m.season && g.type === 'REG') g.box = { scoring: g.box.scoring, tm: g.box.tm };
@@ -357,7 +383,7 @@ function enterFreeAgency() {
   const m = Lg.meta;
   const old = m.season;
   // rollover unused cap
-  for (const t of Lg.teams) { const c = teamCap(t.tid, old); t.rollover[old + 1] = Math.max(0, Math.min(c.space, 45e6)); }
+  for (const t of Lg.teams) if (t.rollover[old + 1] == null) { const c = teamCap(t.tid, old); t.rollover[old + 1] = Math.max(0, Math.min(c.space, 45e6)); }
   m.season = old + 1;
   capFor(m.season);
   m.phase = 'FREE_AGENCY'; m.week = 0;
@@ -464,6 +490,7 @@ function enterTrainingCamp() {
 function enterPreseason() {
   const Lg = G.L;
   Lg.meta.phase = 'PRESEASON'; Lg.meta.week = 1;
+  ensurePreseasonGames();
   for (const p of Object.values(Lg.players)) if (p.r) p.r.ovrStart = p.r.ovr;
 }
 
@@ -477,8 +504,9 @@ export function advance(opts = {}) {
     case 'SEASON_END': enterResign(); return { ok: true };
     case 'RESIGN': enterFreeAgency(); return { ok: true };
     case 'FREE_AGENCY':
-      if (opts.day && Lg.fa.day < Lg.fa.maxDay) { faDay(); if (Lg.fa.day <= 10) aiTradeRound(0.22, 2); return { ok: true, day: Lg.fa.day }; }
-      while (Lg.fa.day < 14) { faDay(); if (Lg.fa.day <= 10) aiTradeRound(0.22, 2); }
+      if (opts.day && Lg.fa.day < Lg.fa.maxDay) { faDay(); aiTradeRound(0.25, 2); return { ok: true, day: Lg.fa.day }; }
+      while (Lg.fa.day < Lg.fa.maxDay) { faDay(); aiTradeRound(0.25, 2); }
+      faFinish(); // the final day plays out; whoever is left stays on the market
       enterLeagueMeeting(); return { ok: true };
     case 'LEAGUE_MEETING': enterDraft(); return { ok: true };
     case 'DRAFT':

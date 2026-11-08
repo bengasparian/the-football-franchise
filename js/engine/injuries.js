@@ -1,4 +1,5 @@
 // Injury types & recovery. Severity distribution modeled on NFL injury reports.
+import { longevityInjuryHit } from './dev.js';
 import { G, rnd, wpick, clamp, gauss, news, transaction } from './core.js';
 
 const TYPES = [
@@ -27,6 +28,7 @@ export function applyGameInjuries(box, game) {
     const wk = inj.se ? 99 : inj.wk;
     p.inj = { type: inj.type, wk: Math.max(wk, p.inj?.wk || 0), s: Lg.meta.season, w: Lg.meta.week, se: inj.se };
     (p.injHist ||= []).push({ s: Lg.meta.season, w: Lg.meta.week, type: inj.type, wk });
+    longevityInjuryHit(p, wk, inj.se);
     if (wk >= 3 || inj.se) {
       const t = Lg.teams[p.tid];
       news(`${t.abbr} ${p.pos} ${p.fn} ${p.ln} suffered a ${inj.type.toLowerCase()}${inj.se ? ' and is out for the season' : ` and is expected to miss ${wk} weeks`}.`, { type: 'injury', tids: [p.tid], pids: [p.pid], big: p.r.ovr >= 80 });

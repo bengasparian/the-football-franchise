@@ -93,14 +93,15 @@ export function yearsLeft(p) { return p.contract ? p.contract.exp - G.L.meta.sea
 export function inSeasonPhase() { return ['PRESEASON', 'REGULAR_SEASON', 'PLAYOFFS'].includes(G.L.meta.phase); }
 // the "cap year" currently being managed (offseason phases already manage next season)
 export function capSeason() {
-  return G.L.meta.phase === 'RESIGN' ? G.L.meta.season + 1 : G.L.meta.season;
+  // once the season is over, every cap view looks at the next league year
+  return ['SEASON_END', 'RESIGN'].includes(G.L.meta.phase) ? G.L.meta.season + 1 : G.L.meta.season;
 }
 
 export function teamCap(tid, s = capSeason()) {
   const Lg = G.L;
   const t = Lg.teams[tid];
   const ps = Object.values(Lg.players).filter((p) => p.tid === tid);
-  const offseason = ['RESIGN', 'FREE_AGENCY', 'LEAGUE_MEETING', 'DRAFT', 'POST_DRAFT', 'TRAINING_CAMP', 'FANTASY_DRAFT'].includes(Lg.meta.phase);
+  const offseason = ['SEASON_END', 'RESIGN', 'FREE_AGENCY', 'LEAGUE_MEETING', 'DRAFT', 'POST_DRAFT', 'TRAINING_CAMP', 'FANTASY_DRAFT'].includes(Lg.meta.phase);
   let hits = ps.map((p) => ({ p, h: p.status === 'PS' ? (p.contract?.ps || psSalary(p.exp, s)) : capHit(p, s) }));
   let used;
   if (offseason) {
@@ -161,6 +162,8 @@ export function releasePlayer(pid, { june1 = false, toWaivers = true } = {}) {
   const oldTid = p.tid;
   p.tid = -1; p.status = 'FA'; p.contract = null; p.holdout = false; p.tradeReq = null;
   p.lastTeam = oldTid; p.releasedSeason = Lg.meta.season;
+  // a starter who gets cut (or an unhappy one) may hold it against the team
+  if (p.r.ovr >= 72 && ((p.pers?.ego ?? 0.5) > 0.6 || (p.morale ?? 60) < 40)) (p.grudge ||= {})[oldTid] = { s: Lg.meta.season, why: `Released by ${t.abbr}` };
   p.waiver = toWaivers && (p.exp ?? 0) < 4 && Lg.meta.phase === 'REGULAR_SEASON' ? { from: oldTid, w: Lg.meta.week } : null;
   transaction('release', `${t.abbr} released ${p.pos} ${p.fn} ${p.ln}${dm.now ? ` (${fmtMoney(dm.now)} dead money)` : ''}`, { tids: [oldTid], pids: [pid] });
   return { ok: true, dead: dm };
@@ -293,56 +296,130 @@ export function exerciseOption(pid) {
 }
 
 // ---------- Negotiation
+// What a player is really after from a given team, and why. Returns the realistic target APY plus the reasons
+// (hometown/loyalty discount, ring chasing, grudges) the UI shows during talks.
 export function playerAsk(p, tid, ctx = {}) {
   const Lg = G.L;
   const pers = p.pers || {};
-  let mv = marketValue(p);
+  const mv = marketValue(p);
+  const reasons = [];
   const ownTeam = p.tid === tid || p.lastTeam === tid;
-  let f = 1 + (pers.greed - 0.5) * 0.25;
-  if (ownTeam) f *= 1 - Math.max(0, pers.loyal - 0.4) * 0.15 + (p.morale != null ? (55 - p.morale) / 400 : 0);
-  if (ctx.fa) f *= 1 + Math.min(0.25, (ctx.interest || 0) * 0.04);
-  const tStr = ctx.teamStrength ?? 0.5;
-  f *= 1 - Math.max(0, pers.win - 0.6) * Math.max(0, tStr - 0.55) * 0.5;
+  let f = 1 + (pers.greed - 0.5) * 0.22;
+  if (ownTeam) {
+    const loyal = Math.max(0, pers.loyal - 0.45) * 0.16;
+    if (loyal > 0.02) reasons.push(['Hometown discount', `Loyal to his team: about ${Math.round(loyal * 100)}% off`]);
+    f *= 1 - loyal + (p.morale != null ? (55 - p.morale) / 450 : 0);
+    if (p.morale != null && p.morale < 35) reasons.push(['Unhappy', 'Low morale here, so he wants a premium to stay']);
+  }
+  if (p.draft?.tid === tid && p.tid !== tid && pers.loyal > 0.6) { f *= 0.96; reasons.push(['Return home', 'Would like to finish where he started']); }
+  const tStr = ctx.teamStrength ?? teamStrength(tid);
+  const ring = Math.max(0, pers.win - 0.55) * Math.max(0, tStr - 0.55) * 0.7;
+  if (ring > 0.01) { f *= 1 - ring; reasons.push(['Ring chaser', `Takes less to join a contender (about ${Math.round(ring * 100)}% off)`]); }
+  if (pers.win > 0.7 && tStr < 0.35) { f *= 1.06; reasons.push(['Wants to win', 'Wants extra to join a rebuilding team']); }
+  const g = p.grudge?.[tid];
+  if (g && g.s >= Lg.meta.season - 2) { f *= 1.15; reasons.push(['Bad blood', g.why || 'Has issues with this organization']); }
+  if (ctx.fa) f *= 1 + Math.min(0.2, (ctx.interest || 0) * 0.035);
   if (p.holdout) f *= 1.06;
   const yrs = idealYears(p);
-  f = clamp(f, 0.7, 1.12);
+  f = clamp(f, 0.72, 1.2);
   const maxPct = { QB: 0.228, EDGE: 0.17, WR: 0.15, DT: 0.135 }[p.pos] ?? 0.13;
   const capS = capFor(['REGULAR_SEASON', 'PRESEASON', 'PLAYOFFS', 'SEASON_END', 'RESIGN'].includes(Lg.meta.phase) ? Lg.meta.season + 1 : Lg.meta.season);
-  return { apy: Math.round(Math.min(mv * f, capS * maxPct) / 10000) * 10000, years: yrs, gtdPct: idealGtdPct(p), mv };
+  return { apy: Math.round(Math.min(mv * f, capS * maxPct) / 10000) * 10000, years: yrs, gtdPct: idealGtdPct(p), mv, reasons, refuses: !!(g && g.hard && g.s >= Lg.meta.season - 1) };
+}
+function teamStrength(tid) {
+  const t = G.L.teams[tid];
+  if (!t) return 0.5;
+  const st = G.L.standingsCache?.[tid];
+  const r = 1 - ((t.powerRank ?? 16) - 1) / 31;
+  return st && st.gp >= 6 ? r * 0.5 + st.pct * 0.5 : r;
 }
 
-export function evaluateOffer(p, tid, offer, ctx = {}) {
-  const ask = playerAsk(p, tid, ctx);
+// Value of an offer in "APY-equivalent" terms for this player: length and guarantees matter, differently by age.
+export function offerValue(p, offer, ask) {
+  const a = age(p);
   const total = offer.apy * offer.years;
   const gp = offer.gtd / Math.max(total, 1);
   const yrDiff = offer.years - ask.years;
-  const yrsF = yrDiff >= 0 ? 1 - Math.min(0.1, yrDiff * 0.015) * (age(p) >= 30 ? -1 : 1) : 1 - Math.abs(yrDiff) * (age(p) >= 30 ? 0.06 : 0.035);
-  const gtdF = 1 + (gp - ask.gtdPct) * (0.35 + (p.pers?.greed ?? 0.5) * 0.25);
-  const value = offer.apy * yrsF * gtdF;
+  // young players want shorter deals to cash in again; veterans want security
+  const yrsF = a >= 29 ? 1 + clamp(yrDiff, -3, 2) * 0.035 : 1 - Math.abs(yrDiff) * 0.025;
+  const gtdF = 1 + (gp - ask.gtdPct) * (0.35 + (p.pers?.greed ?? 0.5) * 0.3);
+  return offer.apy * yrsF * gtdF;
+}
+export function evaluateOffer(p, tid, offer, ctx = {}) {
+  const ask = playerAsk(p, tid, ctx);
+  const value = offerValue(p, offer, ask);
   const ratio = value / Math.max(ask.apy, 1);
   return { ask, value, ratio, accept: ratio >= 0.985 };
 }
 
+// The agent opens high, has a private walk-away number, and comes down as you negotiate in good faith.
+// Lowball offers sour the mood; every round costs patience.
+function negState(p, tid, ctx) {
+  const Lg = G.L;
+  p.neg ||= {};
+  let st = p.neg[tid];
+  if (!st || st.phase !== Lg.meta.phase || st.s !== Lg.meta.season) {
+    const ask = playerAsk(p, tid, ctx);
+    const greed = p.pers?.greed ?? 0.5;
+    const open = ask.apy * (1.05 + greed * 0.1 + rnd() * 0.03);
+    const floor = ask.apy * (0.9 + greed * 0.07 + rnd() * 0.02);
+    const patience = Math.round((3 + (1 - (p.pers?.volat ?? 0.3)) * 3) * (Lg.settings.sliders.playerPatience ?? 1));
+    st = p.neg[tid] = { phase: Lg.meta.phase, s: Lg.meta.season, cur: Math.round(open / 1e4) * 1e4, floor: Math.round(floor / 1e4) * 1e4, target: ask.apy, years: ask.years, gtdPct: ask.gtdPct, mood: 1, tries: 0, patience, best: 0 };
+  }
+  return st;
+}
+export function negotiationOptions(pid, tid, ctx = {}) {
+  const p = G.L.players[pid];
+  const st = negState(p, tid, ctx);
+  const ask = playerAsk(p, tid, ctx);
+  const yrs = st.years, gp = st.gtdPct;
+  const r = (x) => Math.round(x / 1e4) * 1e4;
+  const a = age(p);
+  // three ready-made offers: what the agent wants, a fair middle, and a team-friendly deal
+  const presets = {
+    player: { label: 'Player friendly', years: a >= 29 ? Math.min(5, yrs + 1) : Math.max(1, yrs - 1), apy: r(st.cur), gtd: r(st.cur * (a >= 29 ? Math.min(5, yrs + 1) : Math.max(1, yrs - 1)) * Math.min(0.85, gp + 0.15)) },
+    neutral: { label: 'Neutral', years: yrs, apy: r((st.cur + st.target) / 2), gtd: r((st.cur + st.target) / 2 * yrs * gp) },
+    team: { label: 'Team friendly', years: a <= 27 ? yrs + 1 : Math.max(1, yrs - 1), apy: r(st.target * 0.95), gtd: r(st.target * 0.95 * (a <= 27 ? yrs + 1 : Math.max(1, yrs - 1)) * Math.max(0, gp - 0.12)) },
+  };
+  return { ask: { apy: st.cur, years: yrs, gtdPct: gp }, mv: ask.mv, reasons: ask.reasons, refuses: ask.refuses, mood: st.mood, tries: st.tries, patience: st.patience, presets };
+}
 export function negotiate(pid, tid, offer, ctx = {}) {
   const Lg = G.L;
   const p = Lg.players[pid];
-  const key = `${tid}`;
-  p.neg ||= {};
-  const st = (p.neg[key] ||= { tries: 0, mood: 1, phase: Lg.meta.phase, s: Lg.meta.season });
-  if (st.phase !== Lg.meta.phase || st.s !== Lg.meta.season) { st.tries = 0; st.mood = 1; st.phase = Lg.meta.phase; st.s = Lg.meta.season; }
-  const patience = Math.round((3 + (1 - (p.pers?.volat ?? 0.3)) * 2) * (Lg.settings.sliders.playerPatience ?? 1));
-  if (st.mood <= 0) return { status: 'refused', message: `${p.fn} ${p.ln} is no longer willing to negotiate with you right now.` };
-  const ev = evaluateOffer(p, tid, offer, ctx);
+  const ask = playerAsk(p, tid, ctx);
+  if (ask.refuses) return { status: 'refused', message: `${p.fn} ${p.ln} won't negotiate with your organization.` };
+  const st = negState(p, tid, ctx);
+  if (st.mood <= 0) return { status: 'refused', message: `${p.fn} ${p.ln} is done talking with you for now. Try again later.` };
+  const value = offerValue(p, offer, { years: st.years, gtdPct: st.gtdPct });
   st.tries++;
-  if (ev.accept && !ctx.faPending) return { status: 'accepted', ev };
-  if (ev.accept && ctx.faPending) return { status: 'considering', ev, message: `${p.fn} likes the offer and will decide as free agency plays out.` };
-  if (ev.ratio < 0.8) st.mood -= 0.45; else if (ev.ratio < 0.92) st.mood -= 0.25; else st.mood -= 0.1;
-  if (st.tries >= patience) st.mood = Math.min(st.mood, 0.15);
-  const counterApy = Math.round(ev.ask.apy * (1 + (st.tries > 1 ? 0.01 : 0)) / 10000) * 10000;
-  const counter = { years: ev.ask.years, apy: counterApy, gtd: Math.round(counterApy * ev.ask.years * ev.ask.gtdPct / 10000) * 10000 };
-  const tone = ev.ratio < 0.8 ? 'insulted' : ev.ratio < 0.92 ? 'far apart' : 'close';
+  const ev = { ask: { ...ask, apy: st.cur }, value, ratio: value / Math.max(st.cur, 1) };
+  // accept: meets the current ask, or is above his walk-away number and he's tired of talking / it's close
+  const closeEnough = value >= st.cur * 0.975;
+  const aboveFloor = value >= st.floor;
+  const fatigue = st.tries / st.patience;
+  const acceptChance = closeEnough ? 1 : aboveFloor ? clamp((value - st.floor) / Math.max(1, st.cur - st.floor) * 0.55 + fatigue * 0.3, 0, 0.9) : 0;
+  if (rnd() < acceptChance) {
+    if (ctx.faPending) return { status: 'considering', ev, message: `${p.fn} likes the offer and will decide as free agency plays out.` };
+    return { status: 'accepted', ev };
+  }
+  const ratio = value / st.floor;
+  let tone;
+  if (ratio < 0.8) { st.mood -= 0.45; tone = 'insulted'; }
+  else if (ratio < 0.93) { st.mood -= 0.22; tone = 'far apart'; }
+  else { st.mood -= 0.08; tone = 'close'; }
+  if (st.tries >= st.patience) st.mood = Math.min(st.mood, 0.1);
   if (st.mood <= 0) return { status: 'refused', ev, message: `Talks broke down. ${p.fn} ${p.ln} walked away from the table.` };
-  return { status: 'counter', ev, counter, tone, moodLeft: st.mood, message: tone === 'insulted' ? `${p.fn}'s camp called that offer insulting.` : tone === 'far apart' ? `${p.fn}'s agent says you're still far apart.` : `${p.fn} says you're close.` };
+  // the agent comes down toward a serious offer (never below the walk-away number); lowballs don't move him
+  if (tone !== 'insulted') {
+    const conc = (0.22 + (1 - (p.pers?.greed ?? 0.5)) * 0.2) * (tone === 'close' ? 1.2 : 0.8);
+    st.cur = Math.round(Math.max(st.floor, st.cur - (st.cur - Math.max(value, st.floor)) * conc) / 1e4) * 1e4;
+  }
+  st.best = Math.max(st.best, value);
+  const counter = { years: st.years, apy: st.cur, gtd: Math.round(st.cur * st.years * st.gtdPct / 1e4) * 1e4 };
+  const msg = tone === 'insulted' ? `${p.fn}'s camp called that offer insulting. They didn't budge.`
+    : tone === 'far apart' ? `${p.fn}'s agent came down a little to ${fmtMoney(st.cur)}/yr, but you're still far apart.`
+      : `Close. ${p.fn}'s agent lowered the ask to ${fmtMoney(st.cur)}/yr.`;
+  return { status: 'counter', ev, counter, tone, moodLeft: st.mood, message: msg };
 }
 
 export function signContract(pid, tid, offer, { start = null, type = 'sign' } = {}) {
@@ -354,6 +431,9 @@ export function signContract(pid, tid, offer, { start = null, type = 'sign' } = 
   if (offer.apy > maxApy) offer = { ...offer, apy: Math.round(maxApy / 10000) * 10000, gtd: Math.min(offer.gtd, Math.round(maxApy * offer.years)) };
   let c;
   if (type === 'extend' && p.contract) {
+    // an extension never leaves more than 6 years on the books
+    const left = p.contract.years.filter((y) => y.s >= capSeason()).length;
+    if (left + offer.years > 6) { const yrs = Math.max(1, 6 - left); offer = { ...offer, years: yrs, gtd: Math.min(offer.gtd, Math.round(offer.apy * yrs)) }; }
     const newC = makeContract({ start: p.contract.exp + 1, years: offer.years, apy: offer.apy, gtd: offer.gtd });
     // signing bonus of the extension prorates across remaining + new years (max 5)
     const keep = p.contract.years.filter((y) => y.s >= capSeason());

@@ -76,10 +76,20 @@ export function updateMorale(marketValueFn) {
       const money = contractSatisfaction(p, marketValueFn);
       const winF = winPct;
       const coachF = t.staff?.hc ? (Lg.coaches[t.staff.hc]?.rel ?? 0.6) : 0.6;
+      // spotlight seekers want the ball: compare their touches to what a player of their status expects
+      let touches = 0;
+      const st = p.stats?.[s]?.SIM;
+      if (['WR', 'TE', 'RB'].includes(p.pos) && st?.g >= 3 && (pers.ego ?? 0.5) > 0.6 && p.r.ovr >= 80) {
+        const per = ((st.tgt || 0) + (st.car || 0) * (p.pos === 'RB' ? 1 : 0)) / st.g;
+        const want = p.pos === 'RB' ? 16 : p.pos === 'WR' ? 8 : 6;
+        touches = clamp((per - want) / want, -0.6, 0.3) * 0.12 * (pers.ego ?? 0.5);
+      }
+      // loyal veterans and leaders ride out bad stretches; hotheads don't
+      const loyalF = (pers.loyal ?? 0.5) > 0.7 && (p.yrsWithTeam ?? 0) >= 3 ? 0.05 : 0;
       const target = 100 * clamp(
         0.15 + role * (0.18 + (pers.ego ?? 0.5) * 0.15) + money * (0.12 + (pers.greed ?? 0.5) * 0.18) +
-        winF * (0.12 + (pers.win ?? 0.5) * 0.18) + coachF * 0.08 + (t.chem ?? 0.6) * 0.08, 0, 1);
-      const speed = 0.25 + (pers.volat ?? 0.3) * 0.35;
+        winF * (0.12 + (pers.win ?? 0.5) * 0.18) + coachF * 0.08 + (t.chem ?? 0.6) * 0.08 + touches + loyalF, 0, 1);
+      const speed = (0.25 + (pers.volat ?? 0.3) * 0.35) * (1 - Math.max(0, (pers.lead ?? 0.5) - 0.7) * 0.6);
       p.morale = clamp(Math.round((p.morale ?? 65) + (target - (p.morale ?? 65)) * speed * impact + gauss(0, 2)), 0, 100);
     }
   }

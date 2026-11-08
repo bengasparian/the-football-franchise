@@ -84,8 +84,9 @@ PAGES.roster = async ([tidS]) => {
     { k: 'name', l: 'Player', f: (p) => pname(p, { sub: `${p.pos}${p.depthIdx >= 0 ? ` · ${p.pos}${p.depthIdx + 1}` : ''}` }), sortv: (p) => p.ln },
     { k: 'pos', l: 'Pos', sortv: (p) => POS.indexOf(p.pos) },
     { k: 'age', l: 'Age', num: true },
-    { k: 'ovr', l: 'OVR', f: (p) => `${ovr(p.ovr)}${delta(p.ovrDelta)}`, num: true },
-    { k: 'pot', l: 'Pot', f: (p) => esc(p.pot || '—') },
+    { k: 'ovr', l: 'OVR', f: (p) => `${ovr(p.ovr)}${delta(p.ovrDelta)}`, num: true, title: 'Overall rating (change since the start of the season)' },
+    { k: 'dev', l: 'Dev', f: (p) => `<span class="${p.dev === 'Elite' ? 'dev-elite' : p.dev === 'Star' ? 'dev-star' : p.dev === 'Impact' ? 'dev' : 'dim'}" title="Development trait: how fast he grows and how well he ages">${esc(p.dev || 'Normal')}</span>`, sortv: (p) => ['Normal', 'Impact', 'Star', 'Elite'].indexOf(p.dev || 'Normal'), title: 'Development trait' },
+    { k: 'pot', l: 'Pot', f: (p) => esc(p.pot || '—'), title: 'Scouted potential (young players)' },
     { k: 'exp', l: 'Exp', num: true },
     { k: 'line', l: 'Season', f: (p) => `<span class="small muted">${esc(p.line)}</span>`, nosort: true },
     { k: 'contract', l: 'Contract', f: (p) => contractTxt(p.contract), sortv: (p) => p.contract?.apy || 0 },
@@ -101,10 +102,10 @@ PAGES.roster = async ([tidS]) => {
 };
 function rosterActions(p, r) {
   const b = [];
-  if (p.status === 'ACT') { b.push(`<button class="btn sm" data-act="toPS" data-pid="${esc(p.pid)}" title="Move to practice squad">PS</button>`); if (p.inj && (p.inj.wk >= r.rules.irMinGames || p.inj.se)) b.push(`<button class="btn sm" data-act="ir" data-pid="${esc(p.pid)}">IR</button>`); }
-  if (p.status === 'PS') b.push(`<button class="btn sm" data-act="promote" data-pid="${esc(p.pid)}">Promote</button>`);
-  if (p.status === 'IR' && !(p.inj && p.inj.wk > 0)) b.push(`<button class="btn sm" data-act="activate" data-pid="${esc(p.pid)}">Activate</button>`);
-  b.push(`<button class="btn sm danger" data-act="releaseAsk" data-pid="${esc(p.pid)}">Release</button>`);
+  if (p.status === 'ACT') { b.push(`<button class="btn sm" data-act="toPS" data-pid="${esc(p.pid)}" title="Move to practice squad">PS</button>`); if (p.inj && (p.inj.wk >= r.rules.irMinGames || p.inj.se)) b.push(`<button class="btn sm" data-act="ir" data-pid="${esc(p.pid)}" title="Place on injured reserve (frees a roster spot; he must sit at least ${r.rules.irMinGames} games)">IR</button>`); }
+  if (p.status === 'PS') b.push(`<button class="btn sm" data-act="promote" data-pid="${esc(p.pid)}" title="Promote to the active roster on a minimum deal">Promote</button>`);
+  if (p.status === 'IR' && !(p.inj && p.inj.wk > 0)) b.push(`<button class="btn sm" data-act="activate" data-pid="${esc(p.pid)}" title="Return him to the active roster">Activate</button>`);
+  b.push(`<button class="btn sm danger" data-act="releaseAsk" data-pid="${esc(p.pid)}" title="Cut him (shows dead money before confirming)">Release</button>`);
   return `<div class="row" style="gap:4px;flex-wrap:nowrap">${b.join('')}</div>`;
 }
 ACTIONS.rosterTab = (el) => { rosterTab = el.dataset.k; rerender(); };
@@ -156,10 +157,10 @@ PAGES.player = async ([pid]) => {
   if (playerTab === 'persona') body = personaTab(p);
   if (playerTab === 'history') body = historyTab(p);
   const dr = p.draft ? (p.draft.r ? `${p.draft.y} Rd ${p.draft.r}, #${p.draft.p}${p.draft.tm ? ` (${esc(p.draft.tm)})` : ''}` : `${p.draft.y} UDFA`) : 'Undrafted';
-  return `<div class="hero-team" style="--tc1:${esc(t?.c1 || '#1e293b')}">${hs(p.hs, 'lg')}<div><div class="small" style="color:rgba(255,255,255,.75)">${t ? `${logo(t.logo, 'sm')} <a href="#/team/${t.tid}" style="color:#fff">${esc(t.region)} ${esc(t.name)}</a>` : esc(p.status === 'PROSPECT' ? 'Draft prospect' : p.status === 'RET' ? 'Retired' : 'Free agent')} ${p.jn != null ? `· #${p.jn}` : ''}</div>
+  return `<div class="hero-team" style="--tc1:${esc(t?.c1 || '#1e293b')}">${hs(p.hs, 'lg', p)}<div><div class="small" style="color:rgba(255,255,255,.75)">${t ? `${logo(t.logo, 'sm')} <a href="#/team/${t.tid}" style="color:#fff">${esc(t.region)} ${esc(t.name)}</a>` : esc(p.status === 'PROSPECT' ? 'Draft prospect' : p.status === 'RET' ? 'Retired' : 'Free agent')} ${p.jn != null ? `· #${p.jn}` : ''}</div>
     <h1>${esc(p.name)}</h1><div class="small" style="color:rgba(255,255,255,.85)">${esc(p.pos)} · Age ${age} · ${ht(p.ht)}, ${p.wt || '—'} lbs · ${esc(p.college || '—')} · ${dr} · ${p.exp} yrs exp</div>
     <div class="row" style="margin-top:6px">${injBadge(p)} ${p.holdout ? '' : ''} ${p.tradeReq ? '<span class="badge red">Requested trade</span>' : ''} ${p.hof ? `<span class="badge pur">Hall of Fame ${p.hof}</span>` : ''} ${(p.pers || []).slice(0, 3).map((x) => `<span class="badge blu" title="${esc(x.d)}">${esc(x.l)}</span>`).join(' ')}</div></div>
-    <div class="stats">${p.status !== 'PROSPECT' ? `<div><div class="l">Overall</div><div class="v">${ovr(p.ovr, 'lg')}${delta(p.ovrDelta)}</div></div><div><div class="l">Potential</div><div class="v" style="font-size:20px">${esc(p.pot || 'Established')}</div></div>` : `<div><div class="l">Big board</div><div class="v">${p.scouted ? '' : ''}</div></div>`}<div><div class="l">Morale</div><div class="v" style="font-size:18px">${moraleTxt(p.morale)}</div></div>${p.contract ? `<div><div class="l">Contract</div><div class="v" style="font-size:20px">${money(p.contract.apy)}<span class="small"> /yr</span></div><div class="small">thru ${p.contract.exp}</div></div>` : ''}</div></div>
+    <div class="stats">${p.status !== 'PROSPECT' ? `<div><div class="l">Overall</div><div class="v">${ovr(p.ovr, 'lg')}${delta(p.ovrDelta)}</div></div><div><div class="l">Potential</div><div class="v" style="font-size:20px">${esc(p.pot || 'Established')}</div></div>` : `<div><div class="l">Big board</div><div class="v">${p.scouted ? '' : ''}</div></div>`}${p.dev ? `<div title="${esc(p.devInfo || '')}"><div class="l">Dev trait</div><div class="v" style="font-size:20px">${esc(p.dev)}</div></div>` : ''}${p.lon != null ? `<div title="Longevity: how long his body holds up. Drops with serious injuries, recovers a little with healthy seasons."><div class="l">Longevity</div><div class="v" style="font-size:20px">${p.lon} <span class="small">${esc(p.lonLabel || '')}</span></div></div>` : ''}<div title="Happiness with his role, contract, the team's success and the coaching staff"><div class="l">Morale</div><div class="v" style="font-size:18px">${moraleTxt(p.morale)}</div></div>${p.contract ? `<div><div class="l">Contract</div><div class="v" style="font-size:20px">${money(p.contract.apy)}<span class="small"> /yr</span></div><div class="small">thru ${p.contract.exp}</div></div>` : ''}</div></div>
     ${playerButtons(p)}
     <div class="tabs">${tabs.map(([k, l]) => `<a class="${playerTab === k ? 'on' : ''}" data-act="ptab" data-k="${k}">${l}</a>`).join('')}</div>${body}`;
 };
@@ -196,8 +197,9 @@ function prospectTab(p) {
   const s = p.scouted;
   const cmb = p.combine || {};
   return `<div class="grid g2"><div class="card"><h2>Scouting (${['Unscouted', 'Level 1', 'Level 2', 'Fully scouted'][s.lvl]})</h2>
-    <div class="kv"><div>Projected overall</div><div class="b">${s.ovrLo}–${s.ovrHi}</div><div>Potential</div><div>${esc(s.pot)}</div><div>College</div><div>${esc(p.college)}</div><div>Age</div><div>${p.age}</div></div>
-    ${s.attrs && p.ratings ? '' : ''}<p class="small muted">Spend scouting points to narrow the range and reveal potential and personality. Points refill weekly during the season and at the combine.</p></div>
+    <div class="kv"><div>Projected overall</div><div class="b">${s.ovrLo}–${s.ovrHi}</div><div>Potential</div><div>${esc(s.pot)}</div><div>Development</div><div>${esc(p.dev || 'Unknown until fully scouted')}</div><div>College</div><div>${esc(p.college)}${p.colYrs ? ` · ${p.colYrs} seasons` : ''}</div><div>Age</div><div>${p.age}</div></div>
+    ${p.gen ? '<div class="alert good" style="margin-top:8px"><b>Generational prospect.</b> Scouts say a player like this comes along once every 15 years or so.</div>' : ''}
+    ${s.attrs && p.ratings ? '' : ''}<p class="small muted">Spend scouting points to narrow the range and reveal potential and personality. Points refill weekly during the season and at the combine.</p>${collegeTable(p)}</div>
     <div class="card"><h2>Combine</h2><div class="kv">${['forty', 'vertical', 'bench', 'broad_jump', 'cone', 'shuttle'].map((k) => `<div>${{ forty: '40-yard dash', vertical: 'Vertical', bench: 'Bench (225)', broad_jump: 'Broad jump', cone: '3-cone', shuttle: 'Shuttle' }[k]}</div><div>${cmb[k] ?? '<span class="dim">DNP</span>'}</div>`).join('')}</div></div></div>`;
 }
 const STAT_COLS = {
@@ -256,20 +258,28 @@ ACTIONS.scout = async (el) => act('scout', { pid: el.dataset.pid }, { msg: 'Scou
 ACTIONS.boardToggle = async (el) => act('boardToggle', { pid: el.dataset.pid }, { msg: 'Draft board updated.' });
 ACTIONS.tradeFor = (el, e) => { e.preventDefault(); sessionStorage.setItem('tff-want', el.dataset.pid); location.hash = `#/trade/${el.dataset.tid}`; };
 ACTIONS.negotiate = async (el) => {
-  const p = await call('playerDetail', { pid: el.dataset.pid });
   const mode = el.dataset.mode;
-  const ask = p.ask || { apy: p.marketValue, years: 2, gtdPct: 0.3 };
+  const [p, o] = await Promise.all([call('playerDetail', { pid: el.dataset.pid }), call('negOptions', { pid: el.dataset.pid, mode })]);
+  if (o.refuses) { toast(`${esc(p.name)} won't negotiate with your organization.`, 'bad'); return; }
+  const ask = o.ask;
   const yrs = ask.years || 2;
-  const startApy = Math.round((ask.apy * (mode === 'fa' ? 0.95 : 0.92)) / 1e5) / 10;
-  modal(`${mode === 'extend' ? 'Extension' : mode === 'resign' ? 'Re-sign' : 'Free agent offer'}: ${esc(p.name)}`, `
-    <div class="row" style="gap:14px;margin-bottom:12px">${hs(p.hs, 'md')}<div><div class="b">${esc(p.pos)} · ${p.age} yrs · ${ovr(p.ovr)}</div><div class="small muted">Market value ${money(p.marketValue)}/yr · Agent's ask ≈ <b>${money(ask.apy)}</b> × ${yrs} yrs, ~${Math.round((ask.gtdPct || 0) * 100)}% guaranteed</div><div class="small">${(p.pers || []).map((x) => `<span class="badge blu" title="${esc(x.d)}">${esc(x.l)}</span>`).join(' ')}</div></div></div>
-    <div class="grid g3"><div><div class="small muted">Years</div><input type="number" id="ngY" min="1" max="7" value="${yrs}"></div><div><div class="small muted">Average per year ($M)</div><input type="number" id="ngA" step="0.1" min="0.8" value="${startApy}"></div><div><div class="small muted">Guaranteed total ($M)</div><input type="number" id="ngG" step="0.5" min="0" value="${Math.round(startApy * yrs * (ask.gtdPct || 0.3) * 10) / 10}"></div></div>
-    <div class="small muted" style="margin-top:8px">Total value: <b id="ngT"></b>. Lowball offers sour the mood, and after too many he'll walk away. Personality matters: money-motivated players weigh guarantees, ring chasers give contenders a discount, and loyal players give their own team a break.</div>
+  const pr = o.presets.neutral;
+  const pre = (k) => { const x = o.presets[k]; return `<button class="btn ${k === 'neutral' ? 'pri' : ''}" data-act="ngPreset" data-y="${x.years}" data-a="${x.apy}" data-g="${x.gtd}" title="${esc(x.label)}: ${x.years} yrs, ${money(x.apy)}/yr, ${money(x.gtd)} guaranteed"><div class="b">${esc(x.label)}</div><div class="tiny">${x.years} yrs · ${money(x.apy)}/yr</div></button>`; };
+  modal(`${mode === 'extend' ? 'Contract extension' : mode === 'resign' ? 'Re-sign' : 'Free agent offer'}: ${esc(p.name)}`, `
+    <div class="row" style="gap:14px;margin-bottom:12px">${hs(p.hs, 'md', p)}<div style="flex:1"><div class="b">${esc(p.pos)} · ${p.age} yrs · ${ovr(p.ovr)}${p.dev ? ` · <span class="badge" title="Development trait">${esc(p.dev)}</span>` : ''}</div>
+      <div class="small muted">Market value <b>${money(o.mv)}</b>/yr · Agent asking <b id="ngAsk">${money(ask.apy)}</b> × ${yrs} yrs, about ${Math.round((ask.gtdPct || 0) * 100)}% guaranteed</div>
+      <div class="small" style="margin-top:4px">${(p.pers || []).map((x) => `<span class="badge blu" title="${esc(x.d)}">${esc(x.l)}</span>`).join(' ')} ${o.reasons.map((x) => `<span class="badge ${/Bad|Unhappy|Wants/.test(x.l) ? 'red' : 'grn'}" title="${esc(x.d)}">${esc(x.l)}</span>`).join(' ')}</div></div></div>
+    <div class="small muted" style="margin-bottom:6px">Start from a ready-made offer, then adjust:</div>
+    <div class="grid g3" style="margin-bottom:12px">${pre('team')}${pre('neutral')}${pre('player')}</div>
+    <div class="grid g3"><div><div class="small muted">Years</div><input type="number" id="ngY" min="1" max="7" value="${pr.years}" title="Contract length. Young players prefer shorter deals; veterans want security."></div><div><div class="small muted">Average per year ($M)</div><input type="number" id="ngA" step="0.1" min="0.8" value="${Math.round(pr.apy / 1e5) / 10}" title="Average annual value"></div><div><div class="small muted">Guaranteed total ($M)</div><input type="number" id="ngG" step="0.5" min="0" value="${Math.round(pr.gtd / 1e5) / 10}" title="Fully guaranteed money. Money-motivated players weigh this heavily."></div></div>
+    <div class="small muted" style="margin-top:8px">Total value: <b id="ngT"></b>. The agent opens high and comes down when you negotiate in good faith. Lowballs sour the mood, and every round costs patience.</div>
+    <div class="small" style="margin-top:6px">Patience ${meter(Math.max(0, o.mood * 100))}</div>
     <div id="ngMsg" style="margin:12px 0"></div>
     <div class="row"><button class="btn pri" data-act="ngSubmit" data-pid="${esc(p.pid)}" data-mode="${mode}">Submit offer</button><button class="btn ghost" data-act="closeModal">Close</button></div>`, { narrow: true });
   const upd = () => { $('#ngT').textContent = money(+$('#ngY').value * +$('#ngA').value * 1e6); };
   ['ngY', 'ngA'].forEach((i) => $('#' + i).addEventListener('input', upd)); upd();
 };
+ACTIONS.ngPreset = (el) => { $('#ngY').value = el.dataset.y; $('#ngA').value = Math.round(+el.dataset.a / 1e5) / 10; $('#ngG').value = Math.round(+el.dataset.g / 1e5) / 10; $('#ngY').dispatchEvent(new Event('input')); };
 ACTIONS.ngSubmit = async (el) => {
   const offer = { years: +$('#ngY').value, apy: +$('#ngA').value * 1e6, gtd: +$('#ngG').value * 1e6 };
   const r = await call('negotiateP', { pid: el.dataset.pid, offer, mode: el.dataset.mode });
@@ -278,7 +288,7 @@ ACTIONS.ngSubmit = async (el) => {
   if (r.status === 'accepted' || r.signed) { closeModal(); toast('Deal done! Contract signed.', 'good'); rerender(); return; }
   if (r.pending) { box.innerHTML = `<div class="good">${esc(r.message)}</div><div class="small muted">Advance free-agency days to hear his decision.</div>`; return; }
   if (r.status === 'refused') { box.innerHTML = `<div class="bad">${esc(r.message)}</div>`; return; }
-  if (r.status === 'counter') { box.innerHTML = `<div class="${r.tone === 'close' ? 'good' : r.tone === 'insulted' ? 'bad' : 'warn'}">${esc(r.message)}</div>${r.counter ? `<div class="small">Counter: <b>${r.counter.years} yrs × ${money(r.counter.apy)}</b>, ${money(r.counter.gtd)} guaranteed <button class="btn sm" data-act="ngUseCounter" data-y="${r.counter.years}" data-a="${r.counter.apy}" data-g="${r.counter.gtd}">Use counter</button></div>` : ''}<div class="small muted">Patience left: ${meter(Math.max(0, (r.moodLeft ?? 0.5) * 100))}</div>`; return; }
+  if (r.status === 'counter') { box.innerHTML = `<div class="${r.tone === 'close' ? 'good' : r.tone === 'insulted' ? 'bad' : 'warn'}">${esc(r.message)}</div>${r.counter ? `<div class="small">Counter: <b>${r.counter.years} yrs × ${money(r.counter.apy)}</b>, ${money(r.counter.gtd)} guaranteed <button class="btn sm" data-act="ngUseCounter" data-y="${r.counter.years}" data-a="${r.counter.apy}" data-g="${r.counter.gtd}">Use counter</button></div>` : ''}<div class="small muted">Patience left: ${meter(Math.max(0, (r.moodLeft ?? 0.5) * 100))}</div>`; if (r.counter && $('#ngAsk')) $('#ngAsk').textContent = money(r.counter.apy); return; }
   box.innerHTML = `<div class="${r.ok === false ? 'warn' : ''}">${esc(r.message || JSON.stringify(r))}</div>`;
 };
 ACTIONS.ngUseCounter = (el) => { $('#ngY').value = el.dataset.y; $('#ngA').value = Math.round(+el.dataset.a / 1e5) / 10; $('#ngG').value = Math.round(+el.dataset.g / 1e5) / 10; $('#ngY').dispatchEvent(new Event('input')); };
@@ -445,3 +455,10 @@ PAGES.history = async () => {
 };
 ACTIONS.histTab = (el) => { histTab = el.dataset.k; rerender(); };
 void $$; void pct; void bars; void net; void render;
+
+function collegeTable(p) {
+  const c = p.col || [];
+  if (!c.length) return '';
+  const keys = [['g', 'G'], ['cmp', 'Cmp'], ['att', 'Att'], ['yds', 'Yds'], ['td', 'TD'], ['int', 'Int'], ['car', 'Car'], ['ryds', 'Rush'], ['rtd', 'RTD'], ['rec', 'Rec'], ['recyds', 'RecYds'], ['rectd', 'RecTD'], ['tkl', 'Tkl'], ['tfl', 'TFL'], ['sck', 'Sck'], ['pd', 'PD'], ['ff', 'FF'], ['sacksAllowed', 'Sacks allowed'], ['pancakes', 'Pancakes'], ['fgm', 'FGM'], ['fga', 'FGA'], ['lng', 'Long'], ['pnt', 'Punts'], ['avg', 'Avg']].filter(([k]) => c.some((y) => y[k] != null));
+  return `<h3 style="margin-top:12px">College stats (${esc(p.college || '')})</h3><div class="tbl-wrap"><table class="tbl-compact"><thead><tr><th>Year</th>${keys.map(([, l]) => `<th class="num">${l}</th>`).join('')}</tr></thead><tbody>${c.map((y) => `<tr><td>${y.y}</td>${keys.map(([k]) => `<td class="num">${y[k] ?? '—'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}

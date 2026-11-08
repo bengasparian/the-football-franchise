@@ -18,22 +18,46 @@ export function av(p, st) {
 const isDef = (pos) => ['EDGE', 'DT', 'LB', 'CB', 'S'].includes(pos);
 const isOffSkill = (pos) => ['QB', 'RB', 'WR', 'TE', 'FB'].includes(pos);
 
-export function seasonAwards(st) {
+// Award voting model. MVP is a quarterback award unless someone has a historic season; OPOY goes to the best
+// non-QB skill player most years; the same player rarely sweeps both.
+function mvpScore(x, wp) {
+  const p = x.p, st = x.st, v = x.v;
+  const team = 0.35 + wp * 1.3; // winning matters a lot for MVP
+  if (p.pos === 'QB') return v * team;
+  if (p.pos === 'RB' || p.pos === 'FB') {
+    const scr = (st.ryd || 0) + (st.recyd || 0), td = (st.rtd || 0) + (st.rectd || 0);
+    const hist = scr >= 2000 || (scr >= 1850 && td >= 18) ? 1.0 : scr >= 1700 ? 0.72 : 0.5;
+    return v * hist * team;
+  }
+  if (p.pos === 'WR' || p.pos === 'TE') {
+    const hist = (st.recyd || 0) >= 1900 || ((st.recyd || 0) >= 1700 && (st.rectd || 0) >= 15) ? 0.95 : (st.recyd || 0) >= 1600 ? 0.68 : 0.48;
+    return v * hist * team;
+  }
+  if (isDef(p.pos)) return v * ((st.sck || 0) >= 21 ? 0.85 : 0.38) * team;
+  return 0;
+}
+export function awardScores(s, st) {
   const Lg = G.L;
-  const s = Lg.meta.season;
-  const ps = Object.values(Lg.players).filter((p) => p.stats?.[s]?.REG && p.tid >= 0);
-  const wp = (tid) => st[tid] ? st[tid].pct : 0.4;
-  const scored = ps.map((p) => ({ p, v: av(p, p.stats[s].REG), team: p.stats[s].tm ?? p.tid }));
+  const ps = Object.values(Lg.players).filter((p) => p.stats?.[s]?.REG && p.tid >= 0 && (p.stats[s].REG.g || 0) >= 1);
+  const wp = (tid) => st?.[tid] ? st[tid].pct : 0.4;
+  const scored = ps.map((p) => ({ p, st: p.stats[s].REG, v: av(p, p.stats[s].REG), team: p.stats[s].tm ?? p.tid }));
   const top = (arr, f) => arr.map((x) => ({ ...x, sc: f(x) })).sort((a, b) => b.sc - a.sc);
   const isRookie = (p) => p.draft?.y === s || (p.exp === 0) || (p.udfa === s);
   const res = {};
-  const mvp = top(scored.filter((x) => isOffSkill(x.p.pos) || isDef(x.p.pos)), (x) => x.v * (x.p.pos === 'QB' ? 1.0 : isDef(x.p.pos) ? 0.55 : 0.72) * (0.45 + wp(x.team) * 1.1));
-  res.MVP = mvp.slice(0, 5);
-  res.OPOY = top(scored.filter((x) => isOffSkill(x.p.pos)), (x) => x.v * (x.p.pos === 'QB' ? 0.82 : 1.05) * (0.8 + wp(x.team) * 0.4)).slice(0, 5);
-  res.DPOY = top(scored.filter((x) => isDef(x.p.pos)), (x) => x.v * (0.85 + wp(x.team) * 0.3)).slice(0, 5);
-  res.OROY = top(scored.filter((x) => isOffSkill(x.p.pos) && isRookie(x.p)), (x) => x.v).slice(0, 5);
-  res.DROY = top(scored.filter((x) => isDef(x.p.pos) && isRookie(x.p)), (x) => x.v).slice(0, 5);
-  res.CPOY = top(scored.filter((x) => { const prev = x.p.stats?.[s - 1]?.REG; return !isRookie(x.p) && (!prev || (prev.g || 0) < 8 || av(x.p, prev) < x.v * 0.5); }), (x) => x.v * (isDef(x.p.pos) ? 0.8 : 1)).slice(0, 5);
+  res.MVP = top(scored.filter((x) => isOffSkill(x.p.pos) || isDef(x.p.pos)), (x) => mvpScore(x, wp(x.team))).slice(0, 10);
+  const mvpPid = res.MVP[0]?.p.pid;
+  res.OPOY = top(scored.filter((x) => isOffSkill(x.p.pos)), (x) => x.v * (x.p.pos === 'QB' ? 0.7 : 1.08) * (0.85 + wp(x.team) * 0.3) * (x.p.pid === mvpPid ? 0.8 : 1)).slice(0, 10);
+  res.DPOY = top(scored.filter((x) => isDef(x.p.pos)), (x) => x.v * (0.85 + wp(x.team) * 0.3)).slice(0, 10);
+  res.OROY = top(scored.filter((x) => isOffSkill(x.p.pos) && isRookie(x.p)), (x) => x.v * (x.p.pos === 'QB' ? 1.1 : 1)).slice(0, 10);
+  res.DROY = top(scored.filter((x) => isDef(x.p.pos) && isRookie(x.p)), (x) => x.v).slice(0, 10);
+  res.CPOY = top(scored.filter((x) => { const prev = x.p.stats?.[s - 1]?.REG; const inj = (x.p.injHist || []).some((h) => h.s === s - 1 && h.wk >= 8); return !isRookie(x.p) && (inj || !prev || (prev.g || 0) < 8 || av(x.p, prev) < x.v * 0.5); }), (x) => x.v * (isDef(x.p.pos) ? 0.8 : 1)).slice(0, 10);
+  return { res, scored };
+}
+
+export function seasonAwards(st) {
+  const Lg = G.L;
+  const s = Lg.meta.season;
+  const { res, scored } = awardScores(s, st);
   const coy = Lg.teams.map((t) => ({ t, sc: (st[t.tid].w - (t.expectWins ?? 8.5)) + st[t.tid].w * 0.25 })).sort((a, b) => b.sc - a.sc);
   const hc = Lg.coaches[coy[0].t.staff.hc];
   res.COY = hc ? [{ coach: hc.name, tid: coy[0].t.tid }] : [];
@@ -92,14 +116,19 @@ export function processRetirements() {
   for (const p of Object.values(Lg.players)) {
     if (p.tid < -1) continue;
     const a = age(p, s + 1);
-    if (a < 29) continue;
-    const shift = { QB: 5, K: 6, P: 6, LS: 6, RB: -3, WR: 0, CB: -1 }[p.pos] || 0;
-    const quality = (p.r.ovr - 70) / 7;
-    const pivot = (34 + shift + quality) * sl + (sl - 1) * 2;
-    let pr = sigmoid((a - pivot) / 1.3);
-    if (p.tid === -1) pr = Math.min(0.97, pr + 0.25 + (a >= 33 ? 0.2 : 0));
-    if (p.contract && p.contract.exp > s && p.contract.apy > 15e6) pr *= 0.5;
+    if (a < 28) continue;
+    const shift = { QB: 4, K: 6, P: 6, LS: 6, RB: -3, FB: -1, WR: 0, CB: -1, S: -0.5, OT: 1, OG: 0.5, C: 1 }[p.pos] || 0;
+    const quality = clamp((p.r.ovr - 72) / 6, -2, 3); // good players get paid to keep playing
+    const body = ((p.lon ?? 60) - 60) / 12; // longevity: about +-3 years at the extremes
+    const devB = { Elite: 1, Star: 0.5 }[p.dev] || 0;
+    const pivot = (34.3 + shift + quality + body + devB) * sl + (sl - 1) * 2;
+    let pr = sigmoid((a - pivot) / 1.0);
+    if (a <= 30 && p.r.ovr >= 70 && p.tid >= 0) pr *= 0.12; // good players under contract almost never walk away young
+    if (p.tid === -1) pr = Math.min(0.97, pr + 0.2 + (a >= 32 ? 0.25 : 0) + (p.r.ovr < 68 ? 0.15 : 0));
+    if (p.contract && p.contract.exp > s && p.contract.apy > 12e6) pr *= 0.45;
+    if (a >= 30 && (p.injHist || []).filter((x) => x.wk >= 30).length >= 2) pr = Math.min(0.95, pr + 0.15);
     if ((p.pers?.win ?? 0.5) > 0.75 && Lg.champions.some((c) => c.s === s && c.tid === p.tid)) pr = Math.min(0.95, pr + 0.15);
+    if (a >= 41 && !['K', 'P', 'LS'].includes(p.pos)) pr = Math.max(pr, 0.9);
     if (rnd() < pr) { retire(p); out.push(p); }
   }
   const big = out.filter((p) => p.r.ovr >= 80 || (p.awards || []).length >= 3).slice(0, 6);

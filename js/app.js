@@ -4,11 +4,13 @@ import { esc, $, $$, money, modal, closeModal, toast, busy, logo, setAccent, TAB
 void $$;
 import { PAGES, ACTIONS as PA } from './pages.js';
 import { PAGES2, ACTIONS as PA2 } from './pages2.js';
+import { PAGES3, ACTIONS as PA3, liveTick } from './pages3.js';
 import { HELP, startTour } from './help.js';
 
 export const APP = { header: null, route: '', params: [], teams: null };
-const ACTIONS = { ...PA, ...PA2 };
-const ROUTES = { ...PAGES, ...PAGES2 };
+const ACTIONS = { ...PA, ...PA2, ...PA3 };
+const ROUTES = { ...PAGES, ...PAGES2, ...PAGES3 };
+APP.reloadTeams = () => loadTeamsCache();
 
 setToastHandler((t, l) => toast(esc(t), l));
 
@@ -28,6 +30,8 @@ async function boot() {
   $('#modal').addEventListener('mousedown', (e) => { if (e.target.id === 'modal') closeModal(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
   onNet(netEvent);
+  setInterval(() => { liveTick(); }, 3000);
+  initTooltips();
   try {
     await call('init');
     const h = await call('hasLeague');
@@ -56,7 +60,9 @@ export async function refreshHeader() {
 export async function render() {
   const hash = location.hash.replace(/^#\/?/, '');
   const [route, ...params] = hash.split('/').map(decodeURIComponent);
+  const prevRoute = APP.route;
   APP.route = route || ''; APP.params = params;
+  if (prevRoute !== APP.route) drawNav(); // highlight the tab instantly
   const h = await refreshHeader();
   const app = $('#app');
   if (APP.route === 'tutorial') { location.hash = '#/home'; setTimeout(startTour, 400); return; }
@@ -67,35 +73,42 @@ export async function render() {
   if (h.fired) return renderFired(h);
   const page = ROUTES[APP.route || 'home'] || ROUTES.home;
   const main = $('#main');
+  const token = (APP.renderToken = (APP.renderToken || 0) + 1);
+  const keep = main.dataset.keep === APP.route;
+  if (!keep) main.classList.add('loading');
   try {
     const html = await page(params, h);
+    if (token !== APP.renderToken) return; // a newer navigation already happened
+    APP.hideTip?.();
     if (html != null) main.innerHTML = html;
-    main.scrollTop = main.dataset.keep === APP.route ? +main.dataset.st || 0 : 0;
+    main.classList.remove('loading');
+    const sc = document.scrollingElement || document.documentElement;
+    if (keep) sc.scrollTop = +main.dataset.st || 0; else sc.scrollTop = 0;
   } catch (e) {
     console.error(e);
     main.innerHTML = `<div class="card"><h2>Something went wrong</h2><p class="bad">${esc(e.message)}</p><p class="muted">Try another page or reload. Your league autosaves.</p></div>`;
   }
   drawNav();
 }
-export async function rerender() { const main = $('#main'); main.dataset.keep = APP.route; main.dataset.st = main.scrollTop; await render(); main.dataset.keep = ''; }
+export async function rerender() { const main = $('#main'); const sc = document.scrollingElement || document.documentElement; main.dataset.keep = APP.route; main.dataset.st = sc.scrollTop; await render(); main.dataset.keep = ''; }
 
 // ---------------------------------------------------------------- top bar & sim controls
 function simButtons(h) {
   const ph = h.phase;
   const host = net.mode !== 'guest';
   if (!host) return `<button class="btn" data-act="toggleReady">${net.myReady ? '✓ Ready' : 'Mark ready'}</button>`;
-  const TIPS = { week: 'Play the next set of games', phase: 'Move to the next phase of the NFL calendar', draftnext: 'Let AI teams pick until you are on the clock' };
+  const TIPS = { week: 'Simulate this week\'s games and move to the next week', phase: 'Move to the next phase of the NFL calendar', draftnext: 'Let CPU teams pick until you are on the clock' };
   const B = (label, target, cls = '') => `<button class="btn ${cls}" ${cls.includes('pri') ? 'id="advanceBtn"' : ''} data-act="sim" data-target="${target}" title="${TIPS[target] || 'Simulate ahead'}">${label}</button>`;
   const more = (items) => `<select class="btn" data-change="simSelect" title="Simulate further ahead" style="padding-right:24px"><option value="">Sim ahead…</option>${items.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>`;
   switch (ph) {
-    case 'REGULAR_SEASON': return `${B(`▶ Play Week ${h.week}`, 'week', 'pri')}${more([['midseason', 'Sim to midseason (Week 9)'], ['deadline', `Sim to trade deadline (after Wk ${h.deadline})`], ['playoffs', 'Sim to playoffs'], ['seasonEnd', 'Sim to end of season'], ['nextSeason', 'Sim to next season']])}`;
-    case 'PRESEASON': return `${B(`▶ Preseason Week ${Math.max(1, h.week)}`, 'week', 'pri')}${more([['playoffs', 'Sim to playoffs'], ['nextSeason', 'Sim to next season']])}`;
-    case 'PLAYOFFS': return `${B('▶ Play Next Round', 'week', 'pri')}${more([['seasonEnd', 'Sim through Super Bowl']])}`;
+    case 'REGULAR_SEASON': return `${B('Advance Week ▶', 'week', 'pri')}${more([['midseason', 'Sim to midseason (Week 9)'], ['deadline', `Sim to trade deadline (after Wk ${h.deadline})`], ['playoffs', 'Sim to playoffs'], ['seasonEnd', 'Sim to end of season'], ['nextSeason', 'Sim to next season']])}`;
+    case 'PRESEASON': return `${B('Advance Week ▶', 'week', 'pri')}${more([['playoffs', 'Sim to playoffs'], ['nextSeason', 'Sim to next season']])}`;
+    case 'PLAYOFFS': return `${B('Advance Round ▶', 'week', 'pri')}${more([['seasonEnd', 'Sim through Super Bowl']])}`;
     case 'SEASON_END': return `${B('Advance to Re-Signing ▶', 'phase', 'pri')}${more([['draft', 'Sim to the Draft'], ['nextSeason', 'Sim to next season']])}`;
     case 'RESIGN': return `${B('Start Free Agency ▶', 'phase', 'pri')}`;
-    case 'FREE_AGENCY': return `<button class="btn" data-act="faDay" title="Advance one day of free agency so players make decisions">Next FA Day</button>${B('To League Meeting ▶', 'phase', 'pri')}`;
+    case 'FREE_AGENCY': return `<button class="btn" data-act="faDay" title="Play out the rest of today: players decide, CPU teams make new offers">Sim to Next Day</button>${B('Finish Free Agency ▶', 'phase', 'pri')}`;
     case 'LEAGUE_MEETING': return `${B('Hold Votes & Start Draft ▶', 'phase', 'pri')}`;
-    case 'DRAFT': return h.draftOnClock ? `<a class="btn pri" id="advanceBtn" href="#/draft">You're on the clock!</a>` : `${B('Sim to My Pick', 'draftnext', 'pri')}${B('Finish Draft', 'phase')}`;
+    case 'DRAFT': return `<a class="btn pri" id="advanceBtn" href="#/draft" title="Go to the live draft room">${h.draftOnClock ? "You're on the clock!" : 'Draft Room ▶'}</a>${B('Sim to My Pick', 'draftnext')}${B('Finish Draft', 'phase')}`;
     case 'POST_DRAFT': return `${B('Open Training Camp ▶', 'phase', 'pri')}`;
     case 'TRAINING_CAMP': return `${B('Start Preseason ▶', 'phase', 'pri')}${more([['nextSeason', 'Skip to Week 1']])}`;
     case 'FANTASY_DRAFT': return `<a class="btn pri" id="advanceBtn" href="#/fantasy">Fantasy Draft Room</a>`;
@@ -107,7 +120,7 @@ function drawTop() {
   const top = $('#top');
   if (!h) { top.innerHTML = `<div class="brand"><span class="the">THE</span><span>Football <b>Franchise</b></span></div><div class="spacer"></div>${net.mode === 'guest' ? `<span class="badge blu">Online · Room ${esc(net.code)}</span>` : ''}`; drawNav(); return; }
   const multi = h.userTids.length > 1 && net.mode !== 'guest';
-  const stage = h.phase === 'REGULAR_SEASON' ? `WEEK ${h.week}` : h.phase === 'PRESEASON' ? `PRESEASON WK ${Math.max(1, h.week)}` : h.phase === 'FREE_AGENCY' ? `FA DAY ${h.faDay ?? 0}` : esc(h.phaseLabel).toUpperCase();
+  const stage = h.phase === 'REGULAR_SEASON' ? `WEEK ${h.week}${h.bye ? ' · BYE' : ''}` : h.phase === 'PRESEASON' ? `PRESEASON WK ${Math.max(1, h.week)}` : h.phase === 'FREE_AGENCY' ? `FA DAY ${h.faDay ?? 0} / 5` : h.phase === 'PLAYOFFS' ? esc(h.roundLabel || 'PLAYOFFS').toUpperCase() : esc(h.phaseLabel).toUpperCase();
   top.innerHTML = `
     <a class="brand" href="#/home" title="Franchise Hub"><span class="the">THE</span><span class="full">Football <b>Franchise</b></span></a>
     <div class="teamid">${logo(h.team.logo, 'md')}<div><div class="tn">${multi ? `<select data-change="switchTeam" class="teamsel" title="Switch which of your teams you are managing">${h.userTids.map((t) => `<option value="${t}" ${t === session.tid ? 'selected' : ''}>${esc(APP.teams?.[t] ? APP.teams[t].region + ' ' + APP.teams[t].name : t)}</option>`).join('')}</select>` : esc(h.team.region + ' ' + h.team.name)}</div><div class="rec">${esc(h.rec || '0-0')} · ${h.season}</div></div></div>
@@ -121,10 +134,10 @@ function drawTop() {
 }
 const SECTIONS = [
   { id: 'home', label: 'Hub', pages: [['home', 'Franchise Hub']] },
-  { id: 'team', label: 'My Team', pages: [['roster', 'Roster'], ['depth', 'Depth Chart'], ['schedule', 'Schedule'], ['cap', 'Salary Cap'], ['staff', 'Coaching Staff'], ['owner', 'Owner & Finances']] },
+  { id: 'team', label: 'My Team', pages: [['roster', 'Roster'], ['depth', 'Depth Chart'], ['schedule', 'Schedule'], ['cap', 'Salary Cap & Contracts'], ['staff', 'Coaching Staff'], ['owner', 'Owner & Finances']] },
   { id: 'moves', label: 'Transactions', pages: [['trade', 'Trade Center'], ['finder', 'Trade Finder'], ['offers', 'Trade Offers'], ['fa', 'Free Agency'], ['draft', 'Draft & Scouting'], ['fantasy', 'Fantasy Draft']] },
-  { id: 'league', label: 'League', pages: [['standings', 'Standings & Playoffs'], ['stats', 'Stats & Leaders'], ['teams', 'Teams'], ['news', 'News'], ['rules', 'League Meeting'], ['history', 'History & Awards']] },
-  { id: 'office', label: 'Office', pages: [['settings', 'Settings & Sliders'], ['online', 'Play Online'], ['start', 'Saves / New League'], ['tutorial', 'Tutorial']] },
+  { id: 'league', label: 'League', pages: [['standings', 'Standings & Playoffs'], ['recap', 'Weekly Recap'], ['awards', 'Awards Race'], ['stats', 'Stats & Leaders'], ['teams', 'Teams'], ['news', 'News'], ['rules', 'League Meeting'], ['history', 'NFL History']] },
+  { id: 'office', label: 'Office', pages: [['franchise', 'Relocate & Rebrand'], ['settings', 'Settings & Sliders'], ['online', 'Play Online'], ['start', 'Saves / New League'], ['tutorial', 'Tutorial']] },
 ];
 function sectionOf(route) { for (const s of SECTIONS) if (s.pages.some(([r]) => r === route)) return s.id; if (['player', 'team', 'game'].includes(route)) return route === 'team' ? 'league' : 'team'; return 'home'; }
 function drawNav() {
@@ -187,6 +200,7 @@ const CORE = {
   menu: () => {},
   help: () => { const k = APP.route || 'home'; const h = HELP[k] || HELP.home; modal(`${esc(h[0])}`, `<div style="line-height:1.6">${h[1]}</div><div class="row" style="margin-top:14px"><button class="btn" data-act="tourStart">Replay the guided tour</button></div>`, { narrow: true }); },
   tourStart: () => { closeModal(); startTour(); },
+  tblMore: (el) => { const st = TABLES[el.dataset.tbl]; if (st) { st.limit = 0; rerender(); } },
   async sim(el) {
     const target = el.dataset.target;
     if (target === 'draftnext') { await act('draftSim', { all: false }, { busyText: 'On the clock…' }); return; }
@@ -335,3 +349,31 @@ Object.assign(CORE, {
 });
 
 boot().then(loadTeamsCache);
+
+// ---------------------------------------------------------------- fast tooltips: anything with a title shows a styled tip right away
+function initTooltips() {
+  const tip = document.createElement('div');
+  tip.id = 'tip';
+  document.body.appendChild(tip);
+  let cur = null;
+  const hide = () => { tip.style.display = 'none'; if (cur && cur.dataset.tip) { cur.setAttribute('title', cur.dataset.tip); } cur = null; };
+  document.addEventListener('mouseover', (e) => {
+    const el = e.target.closest('[title]');
+    if (!el || el === cur) return;
+    hide();
+    const t = el.getAttribute('title');
+    if (!t) return;
+    cur = el; el.dataset.tip = t; el.removeAttribute('title');
+    tip.textContent = t; tip.style.display = 'block';
+    const r = el.getBoundingClientRect();
+    const w = tip.offsetWidth, hgt = tip.offsetHeight;
+    let x = r.left + r.width / 2 - w / 2; x = Math.max(6, Math.min(window.innerWidth - w - 6, x));
+    let y = r.top - hgt - 8; if (y < 6) y = r.bottom + 8;
+    tip.style.left = `${x}px`; tip.style.top = `${y}px`;
+  });
+  document.addEventListener('mouseout', (e) => { if (cur && !cur.contains(e.relatedTarget)) hide(); });
+  document.addEventListener('click', hide, true);
+  window.addEventListener('scroll', hide, true);
+  window.addEventListener('hashchange', hide);
+  APP.hideTip = hide;
+}

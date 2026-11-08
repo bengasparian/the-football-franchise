@@ -4,7 +4,7 @@ import * as API from './engine/api.js';
 
 const READ_ONLY = new Set(['header', 'dashboard', 'teams', 'roster', 'playerDetail', 'depth', 'standings', 'schedule', 'game', 'playerStats', 'leaders',
   'teamStats', 'newsFeed', 'capSheet', 'faList', 'tradeAssets', 'tradeEval', 'tradeFind', 'tradeMakeItWork', 'tradeOffers', 'draftBoard', 'draftState',
-  'fantasyState', 'staff', 'finances', 'rulesView', 'history', 'eventsList', 'settings', 'onlineTeams', 'teamsForPicker']);
+  'fantasyState', 'staff', 'finances', 'rulesView', 'history', 'eventsList', 'settings', 'onlineTeams', 'teamsForPicker', 'recap', 'awardRace', 'nflHistory', 'franchiseOptions']);
 
 let DATA = null;
 let saveId = null;
@@ -54,9 +54,15 @@ async function saveNow() {
   await idb('saves', 'readwrite', (s) => s.put(G.L, saveId));
   await idb('index', 'readwrite', (s) => s.put(indexEntry(), saveId));
 }
+// Saving the whole league is the slowest thing the worker does, so it waits until clicking has paused for a moment
+// (but never longer than 20s after the first unsaved change).
+let firstDirty = 0;
 function scheduleSave() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { saveNow().catch((e) => postMessage({ type: 'toast', level: 'error', text: `Autosave failed: ${e.message}` })); }, 700);
+  const now = Date.now();
+  if (!firstDirty) firstDirty = now;
+  const wait = now - firstDirty > 20000 ? 0 : 2500;
+  saveTimer = setTimeout(() => { firstDirty = 0; saveNow().catch((e) => postMessage({ type: 'toast', level: 'error', text: `Autosave failed: ${e.message}` })); }, wait);
 }
 
 const SPECIAL = {
@@ -104,7 +110,8 @@ self.onmessage = async (e) => {
       if (!G.L) { if (method === 'header') { postMessage({ id, result: null }); return; } throw new Error('No league loaded'); }
       const t0 = performance.now();
       result = fn(args, ctx, DATA);
-      if (!READ_ONLY.has(method)) { changed = true; scheduleSave(); }
+      const tickIdle = (method === 'faLive' && !result?.signed?.length) || (method === 'draftLive' && !result?.picks) || method === 'negOptions';
+      if (!READ_ONLY.has(method) && !tickIdle) { changed = true; scheduleSave(); }
       const dt = performance.now() - t0;
       if (dt > 3000) console.log(`[worker] ${method} took ${Math.round(dt)}ms`);
     }

@@ -16,12 +16,66 @@ export const ovrCls = (o) => (o >= 90 ? 'o90' : o >= 85 ? 'o85' : o >= 80 ? 'o80
 export const ovr = (o, cls = '') => `<span class="ovr ${ovrCls(o)} ${cls}">${o ?? '?'}</span>`;
 export const delta = (d) => (d > 0 ? `<span class="delta up">+${d}</span>` : d < 0 ? `<span class="delta dn">${d}</span>` : '');
 const SIL = "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" fill="#16223c"/><circle cx="20" cy="15" r="7" fill="#33456b"/><path d="M6 38c2-9 8-13 14-13s12 4 14 13" fill="#33456b"/></svg>');
-export const hs = (url, cls = '') => `<img class="hs ${cls}" loading="lazy" src="${esc(url || SIL)}" onerror="this.onerror=null;this.src='${SIL}'" alt="">`;
+// Illustrated portrait for players without a real headshot (generated draft classes, etc.). Deterministic from the
+// player id so the same prospect always has the same face.
+const FACE_CACHE = new Map();
+function hash32(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+export function faceSvg(seed, jersey = '#1e3a8a') {
+  const key = `${seed}|${jersey}`;
+  if (FACE_CACHE.has(key)) return FACE_CACHE.get(key);
+  let h = hash32(String(seed));
+  const r = (n) => { h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0; h = Math.imul(h ^ (h >>> 13), 3266489909) >>> 0; return (h >>> 0) % n; };
+  const SKIN = ['#f1c9a5', '#e0ac85', '#c68a62', '#a86b45', '#8a5433', '#6b3f24', '#553019', '#3f2414'];
+  const skin = SKIN[r(SKIN.length)];
+  const dark = (c, f) => { const n = parseInt(c.slice(1), 16); const k = (x) => Math.max(0, Math.round(x * f)); return `#${[k(n >> 16), k((n >> 8) & 255), k(n & 255)].map((x) => x.toString(16).padStart(2, '0')).join('')}`; };
+  const HAIRC = ['#14100c', '#1f1711', '#2c1d12', '#4a2f1b', '#6b4a2b', '#8c6239', '#b08850'];
+  const hc = HAIRC[r(SKIN.indexOf(skin) >= 3 ? 3 : HAIRC.length)];
+  const faceW = 11 + r(3), jaw = 1 + r(3);
+  const hairStyle = r(7), beard = r(6), brow = r(3), eyes = r(3), nose = 2 + r(3), mouth = r(3);
+  const hair = [
+    '', // bald / shaved
+    `<path d="M${20 - faceW} 15 Q20 3 ${20 + faceW} 15 L${20 + faceW} 12 Q20 1 ${20 - faceW} 12Z" fill="${hc}"/>`, // short
+    `<path d="M${20 - faceW - 1} 16 Q20 -1 ${20 + faceW + 1} 16 Q${20 + faceW} 7 20 6 Q${20 - faceW} 7 ${20 - faceW - 1} 16Z" fill="${hc}"/>`, // afro-ish top
+    `<path d="M${20 - faceW} 14 Q20 4 ${20 + faceW} 14 L${20 + faceW - 1} 11 Q20 5 ${20 - faceW + 1} 11Z" fill="${hc}"/>`, // fade
+    `<g fill="${hc}">${[...Array(7)].map((_, i) => `<rect x="${20 - faceW + i * (faceW * 2 / 7)}" y="4" width="2" height="${14 + r(6)}" rx="1"/>`).join('')}</g>`, // locs
+    `<path d="M${20 - faceW} 13 Q20 2 ${20 + faceW} 13 Q20 7 ${20 - faceW} 13Z" fill="${hc}"/><g stroke="${dark(hc, 0.6)}" stroke-width=".5">${[...Array(4)].map((_, i) => `<line x1="${15 + i * 3}" y1="5" x2="${15 + i * 3}" y2="11"/>`).join('')}</g>`, // braids/cornrows
+    `<path d="M${20 - faceW - 1} 15 Q18 0 ${20 + faceW + 1} 14 L${20 + faceW} 10 Q20 4 ${20 - faceW} 11Z" fill="${hc}"/>`, // swept
+  ][hairStyle];
+  const bd = [
+    '', '',
+    `<path d="M${20 - faceW + 1} 21 Q20 ${33 + jaw} ${20 + faceW - 1} 21 Q20 ${29 + jaw} ${20 - faceW + 1} 21Z" fill="${hc}" opacity=".9"/>`, // full beard
+    `<path d="M17 27 Q20 ${31 + jaw} 23 27 Q20 29 17 27Z" fill="${hc}"/>`, // goatee
+    `<path d="M16.5 25 Q20 23.5 23.5 25 L23 26 Q20 25 17 26Z" fill="${hc}"/>`, // mustache
+    `<path d="M${20 - faceW + 1} 21 Q20 ${33 + jaw} ${20 + faceW - 1} 21" fill="none" stroke="${hc}" stroke-width="1.2" opacity=".55"/>`, // stubble line
+  ][beard];
+  const eyeY = 18, ew = [1.1, 1.3, 0.9][eyes];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" fill="#16223c"/>
+<path d="M3 40 Q5 30 14 29 L26 29 Q35 30 37 40Z" fill="${jersey}"/><path d="M15 29 L20 34 L25 29" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="1"/>
+<rect x="16" y="24" width="8" height="7" fill="${dark(skin, 0.9)}"/>
+<ellipse cx="${20 - faceW}" cy="19" rx="1.6" ry="2.4" fill="${dark(skin, 0.92)}"/><ellipse cx="${20 + faceW}" cy="19" rx="1.6" ry="2.4" fill="${dark(skin, 0.92)}"/>
+<path d="M${20 - faceW} 14 Q${20 - faceW} ${27 + jaw} 20 ${29 + jaw} Q${20 + faceW} ${27 + jaw} ${20 + faceW} 14 Q20 5 ${20 - faceW} 14Z" fill="${skin}"/>
+${hair}
+<g fill="${dark(hc, 0.9)}">${brow === 0 ? `<rect x="14.5" y="15.3" width="4" height="1" rx=".5"/><rect x="21.5" y="15.3" width="4" height="1" rx=".5"/>` : brow === 1 ? `<path d="M14.5 16.3 L18.5 15.2 L18.5 16.1 Z"/><path d="M25.5 16.3 L21.5 15.2 L21.5 16.1 Z"/>` : `<rect x="14.5" y="15" width="4" height="1.4" rx=".7"/><rect x="21.5" y="15" width="4" height="1.4" rx=".7"/>`}</g>
+<ellipse cx="16.5" cy="${eyeY}" rx="1.5" ry="${ew}" fill="#fff"/><ellipse cx="23.5" cy="${eyeY}" rx="1.5" ry="${ew}" fill="#fff"/>
+<circle cx="16.7" cy="${eyeY}" r=".8" fill="#2a1a10"/><circle cx="23.7" cy="${eyeY}" r=".8" fill="#2a1a10"/>
+<path d="M20 19 L${20 - nose / 2} 23 L${20 + nose / 2} 23" fill="none" stroke="${dark(skin, 0.72)}" stroke-width=".8" stroke-linejoin="round"/>
+${bd}
+<path d="${mouth === 0 ? 'M17.5 25.5 Q20 27 22.5 25.5' : mouth === 1 ? 'M17.5 26 L22.5 26' : 'M17.8 25.6 Q20 26.6 22.2 25.6'}" fill="none" stroke="${dark(skin, 0.55)}" stroke-width=".9" stroke-linecap="round"/>
+</svg>`;
+  const uri = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+  FACE_CACHE.set(key, uri);
+  return uri;
+}
+export const hs = (url, cls = '', p = null) => {
+  const src = url || (p && (p.pid || p.name) ? faceSvg(p.pid || p.name, p.tc || '#1e3a8a') : SIL);
+  const fb = p && (p.pid || p.name) ? faceSvg(p.pid || p.name, p.tc || '#1e3a8a') : SIL;
+  return `<img class="hs ${cls}" loading="lazy" decoding="async" src="${esc(src)}" onerror="this.onerror=null;this.src='${fb}'" alt="">`;
+};
 export const logo = (url, cls = '') => (url ? `<img class="logo ${cls}" loading="lazy" src="${esc(url)}" alt="" onerror="this.style.visibility='hidden'">` : '');
 export function pname(p, { link = true, sub = null, img = true } = {}) {
   const n = esc(p.name || `${p.fn} ${p.ln}`);
   const s = sub ?? `${p.pos || ''}${p.team ? ' · ' + p.team : ''}`;
-  return `<div class="pname">${img ? hs(p.hs) : ''}<div style="min-width:0"><div class="n">${link ? `<a href="#/player/${encodeURIComponent(p.pid)}">${n}</a>` : n}</div><div class="x">${esc(s)}</div></div></div>`;
+  return `<div class="pname">${img ? hs(p.hs, '', p) : ''}<div style="min-width:0"><div class="n">${link ? `<a href="#/player/${encodeURIComponent(p.pid)}">${n}</a>` : n}</div><div class="x">${esc(s)}</div></div></div>`;
 }
 export function injBadge(p) {
   if (p.holdout) return '<span class="badge yel">HOLDOUT</span>';
@@ -44,7 +98,7 @@ export const contractTxt = (c) => (!c ? '—' : c.ps ? `<span class="dim">PS ${m
 // ---------- sortable table
 export function table({ cols, rows, key = null, sort = null, onRow = null, cls = '', id = '', empty = 'Nothing here.' }) {
   const tid = id || `t${Math.random().toString(36).slice(2, 8)}`;
-  const state = (TABLES[tid] ||= { sort: sort?.k || null, dir: sort?.dir || 'desc' });
+  const state = (TABLES[tid] ||= { sort: sort?.k || null, dir: sort?.dir || 'desc', limit: 120 });
   let rs = [...rows];
   if (state.sort) {
     const c = cols.find((x) => x.k === state.sort);
@@ -54,7 +108,10 @@ export function table({ cols, rows, key = null, sort = null, onRow = null, cls =
     }
   }
   const head = cols.map((c) => `<th class="${c.num ? 'num' : ''} ${c.c ? 'c' : ''} ${c.nosort ? '' : 'sort'} ${state.sort === c.k ? state.dir : ''}" data-sort="${c.nosort ? '' : c.k}" data-tbl="${tid}" title="${esc(c.title || '')}">${c.l}</th>`).join('');
-  const body = rs.length ? rs.map((r) => `<tr class="${onRow ? 'click' : ''} ${r._cls || ''}" ${onRow ? `data-row="${esc(onRow(r))}"` : ''}>${cols.map((c) => `<td class="${c.num ? 'num' : ''} ${c.c ? 'c' : ''}">${c.f ? c.f(r) : esc(r[c.k] ?? '')}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${cols.length}" class="empty">${empty}</td></tr>`;
+  const total = rs.length;
+  if (state.limit && rs.length > state.limit) rs = rs.slice(0, state.limit);
+  const more = total > rs.length ? `<tr><td colspan="${cols.length}" class="c"><button class="btn sm" data-act="tblMore" data-tbl="${tid}" title="Show every row">Show all ${total}</button></td></tr>` : '';
+  const body = rs.length ? rs.map((r) => `<tr class="${onRow ? 'click' : ''} ${r._cls || ''}" ${onRow ? `data-row="${esc(onRow(r))}"` : ''}>${cols.map((c) => `<td class="${c.num ? 'num' : ''} ${c.c ? 'c' : ''}">${c.f ? c.f(r) : esc(r[c.k] ?? '')}</td>`).join('')}</tr>`).join('') + more : `<tr><td colspan="${cols.length}" class="empty">${empty}</td></tr>`;
   return `<div class="tbl-wrap ${cls}"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 export const TABLES = {};

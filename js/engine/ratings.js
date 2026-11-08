@@ -1,5 +1,6 @@
 // Ratings: attributes, position overall formulas, hidden true talent, performance-driven
 // in-season changes, offseason progression/regression and league-wide distribution control.
+import { DEV_GROWTH, DEV_AGING, devChanges, longevityYearly } from './dev.js';
 import { G, rnd, gauss, clamp, interp, age, allPlayers, round } from './core.js';
 import { STARTERS } from './const.js';
 
@@ -161,9 +162,9 @@ export function ageDelta(pos, a) {
   const x = a - (PEAK_SHIFT[pos] || 0);
   return interp([[21, 5.0], [22, 4.4], [23, 3.4], [24, 2.4], [25, 1.5], [26, 0.8], [27, 0.3], [28, 0], [29, -0.6], [30, -1.3], [31, -2.1], [32, -2.9], [33, -3.8], [34, -4.7], [36, -6.0], [40, -8]], x);
 }
-export function projectPeak(pos, tal, a, work = 0.5) {
+export function projectPeak(pos, tal, a, work = 0.5, dev = 'Normal') {
   let t = tal;
-  for (let y = a; y < 30; y++) { const d = ageDelta(pos, y); if (d <= 0) break; t += d * (0.8 + work * 0.4); }
+  for (let y = a; y < 30; y++) { const d = ageDelta(pos, y); if (d <= 0) break; t += d * (0.7 + work * 0.6) + (y < 27 ? DEV_GROWTH[dev] || 0 : 0); }
   return clamp(t, tal, 99);
 }
 
@@ -255,42 +256,52 @@ export function passerRating(cmp, att, yds, td, int) {
   return ((a + b + c + d) / 6) * 100;
 }
 
-// Weekly: displayed overall moves toward a performance-implied overall (quantile-matched, so no inflation)
-export function updateInSeasonRatings() {
+// Performance-implied overall for the season so far: rank players at each position by their (sample-size
+// regressed) production and hand out that position's ratings in the same order. Quantile matching = no inflation.
+export function seasonPerf(s) {
   const Lg = G.L;
-  const s = Lg.meta.season;
-  const swing = Lg.settings.sliders.inSeasonRatingSwing ?? 1;
   const byPos = {};
   for (const p of Object.values(Lg.players)) {
-    if (p.tid < 0) continue;
+    if (p.tid < -1) continue;
     const st = p.stats?.[s]?.SIM;
     const pi = perfIndex(p, st);
     if (!pi) continue;
     (byPos[p.pos] ||= []).push({ p, ...pi, g: st.g });
   }
+  const out = {};
   for (const pos in byPos) {
     const grp = byPos[pos];
     if (grp.length < 6) continue;
-    // regress index toward mean by sample size before ranking
     const mean = grp.reduce((a, x) => a + x.idx, 0) / grp.length;
     const volRef = { QB: 250, RB: 120, WR: 70, TE: 50, OT: 300, OG: 300, C: 300 }[pos] || 250;
     for (const x of grp) x.adj = mean + (x.idx - mean) * (x.vol / (x.vol + volRef * 0.5));
     const startOvrs = grp.map((x) => x.p.r.ovrStart ?? x.p.r.ovr).sort((a, b) => b - a);
     grp.sort((a, b) => b.adj - a.adj);
-    grp.forEach((x, i) => {
-      if (x.g < 3) return; // no reaction to a game or two
-      const perfOvr = startOvrs[i];
-      const base = x.p.r.ovrStart ?? x.p.r.ovr;
-      // season-long trend, weighted by sample size (a full season moves a rating at most ~45% toward production)
-      const w = Math.min(0.45, x.g / (x.g + 12)) * swing;
-      const target = clamp(base + w * (perfOvr - base), base - 9, base + 9);
-      const cur = x.p.r.ovr;
-      const gap = target - cur;
-      // hysteresis: only move when the trend clearly disagrees, and only a point or two at a time
-      if (Math.abs(gap) < 3) return; // a sustained trend, not one game
-      const step = Math.abs(gap) >= 6 ? 2 : 1;
-      setOvr(x.p, clamp(cur + Math.sign(gap) * step, 25, 99));
-    });
+    // one season of production is a noisy measure of ability: only about half of the gap is treated as real
+    grp.forEach((x, i) => { const base = x.p.r.ovrStart ?? x.p.r.ovr; out[x.p.pid] = { perfOvr: Math.round(base + (startOvrs[i] - base) * 0.55), raw: startOvrs[i], g: x.g }; });
+  }
+  return out;
+}
+
+// Weekly: a rating only drifts after a sustained trend (3+ games), a point at a time, and never far from where the
+// player started the year. One big game or one dud changes nothing.
+export function updateInSeasonRatings() {
+  const Lg = G.L;
+  const swing = Lg.settings.sliders.inSeasonRatingSwing ?? 1;
+  const perf = seasonPerf(Lg.meta.season);
+  for (const pid in perf) {
+    const { perfOvr, g } = perf[pid];
+    if (g < 4) continue;
+    const p = Lg.players[pid];
+    const base = p.r.ovrStart ?? p.r.ovr;
+    const w = Math.min(0.35, g / (g + 14)) * swing;
+    const target = clamp(base + w * (perfOvr - base), base - 5, base + 5);
+    const gap = target - p.r.ovr;
+    if (Math.abs(gap) < 2.5) continue;
+    // at most one point per week, and only every other week for a given player
+    if (p.r.lastMoveW != null && Lg.meta.week - p.r.lastMoveW < 2 && p.r.lastMoveS === Lg.meta.season) continue;
+    setOvr(p, clamp(p.r.ovr + Math.sign(gap), 25, 99));
+    p.r.lastMoveW = Lg.meta.week; p.r.lastMoveS = Lg.meta.season;
   }
 }
 
@@ -326,44 +337,92 @@ export function setOvr(p, newOvr, recordHist = true) {
 }
 
 // ---------- Offseason progression / regression
+// New overall = this year's level + age curve (scaled by dev trait, work ethic, longevity) + what the season showed
+// + a little luck (breakouts and fall-offs). A 33-year-old with 13 sacks barely moves; a 24-year-old who balled out jumps.
 export function offseasonProgression() {
   const Lg = G.L;
   const sl = Lg.settings.sliders;
-  const s = Lg.meta.season + 1; // ages for next season
+  const s0 = Lg.meta.season, s = s0 + 1;
+  if (!Lg.refDist) captureRefDist();
+  const perf = seasonPerf(s0);
   const players = Object.values(Lg.players).filter((p) => p.tid >= -1);
-  const changes = [];
+  const entries = [];
   for (const p of players) {
     const a = age(p, s);
     const work = p.pers?.work ?? 0.5;
+    const dev = p.dev || 'Normal';
+    const g = p.stats?.[s0]?.SIM?.g ?? p.stats?.[s0]?.REG?.g ?? 0;
+    longevityYearly(p, a, g);
     let d = ageDelta(p.pos, a);
-    if (d > 0) d *= sl.progression * (0.75 + work * 0.5);
-    else d *= sl.regression * (1.15 - work * 0.3);
-    if (a < 27 && p.r.pot > p.r.tal) d += (p.r.pot - p.r.tal) * 0.12 * sl.progression;
-    // coaching development
+    if (d > 0) {
+      d = d * 0.85 * sl.progression * (0.7 + work * 0.6) + (a < 27 ? DEV_GROWTH[dev] * sl.progression : 0);
+      // room to grow: the further below his ceiling, the faster a young player climbs
+      if (a < 27 && p.r.pot > p.r.ovr) d += (p.r.pot - p.r.ovr) * 0.05;
+    } else {
+      const lonF = 1.3 - (p.lon ?? 60) / 100 * 0.6;
+      d = d * sl.regression * DEV_AGING[dev] * (1.15 - work * 0.3) * lonF;
+    }
     const coach = Lg.teams[p.tid]?.staff;
-    if (coach && a < 28) d += ((coach.devBonus ?? 0) * 0.6);
-    // in-season performance carries a little real signal (confidence, role growth)
-    d += ((p.r.ovr - (p.r.ovrStart ?? p.r.ovr)) * 0.15);
-    const sd = (a <= 24 ? 3.2 : a <= 29 ? 2.1 : 2.6) * sl.breakoutChance;
+    if (coach && a < 28) d += (coach.devBonus ?? 0) * 0.5;
+    const pf = perf[p.pid];
+    const base = p.r.ovrStart ?? p.r.ovr;
+    let perfGap = 0;
+    if (pf && pf.g >= 6) {
+      perfGap = pf.perfOvr - base;
+      // most of the in-season movement already happened; the offseason finishes part of the job
+      d += clamp((pf.perfOvr - p.r.ovr) * 0.25 * Math.min(1, pf.g / 14), -3, 3);
+    } else if (g <= 2 && a >= 29) d -= 0.8; // didn't play: rust and doubt
+    const sd = (a <= 24 ? 2.0 : a <= 29 ? 1.3 : 1.2) * sl.breakoutChance;
     let shock = gauss(0, sd);
-    if (rnd() < 0.035 * sl.breakoutChance && a <= 27) shock += 4 + rnd() * 6; // breakout
-    if (rnd() < 0.03 * sl.breakoutChance && a >= 27) shock -= 4 + rnd() * 6; // fall-off
-    const oldTal = p.r.tal;
-    p.r.tal = clamp(p.r.tal + d + shock, 25, 99.5);
+    if (shock < 0 && perfGap > 0) shock *= 0.5; // played well: less likely to slip
+    if (rnd() < 0.03 * sl.breakoutChance && a <= 27) shock += 3 + rnd() * 5; // breakout
+    if (rnd() < 0.025 * sl.breakoutChance && a >= 28) shock -= 3 + rnd() * 5 * (1.2 - (p.lon ?? 60) / 100); // fall-off
+    const newOvr = clamp(Math.round(p.r.ovr + d + shock), 25, 99);
+    entries.push({ p, newOvr, perfGap, g, a });
     // physical decline
-    if (a >= 29) for (const k of ['spd', 'acc', 'agi']) p.r.a[k] = clamp(p.r.a[k] - Math.round(rnd() * 2 + (a - 29) * 0.4), 15, 99);
-    if (a <= 24) for (const k of ['str']) p.r.a[k] = clamp(p.r.a[k] + Math.round(rnd() * 2), 15, 99);
-    changes.push({ p, oldTal });
+    if (a >= 29) for (const k of ['spd', 'acc', 'agi']) p.r.a[k] = clamp(p.r.a[k] - Math.round(rnd() * 1.5 + (a - 29) * 0.35 * DEV_AGING[dev]), 15, 99);
+    if (a <= 24) p.r.a.str = clamp(p.r.a.str + Math.round(rnd() * 2), 15, 99);
   }
-  normalizeTalent();
-  for (const { p, oldTal } of changes) {
-    const ovrAdj = p.r.ovr + (p.r.tal - oldTal);
-    const target = 0.4 * ovrAdj + 0.6 * p.r.tal + gauss(0, 1);
-    setOvr(p, clamp(Math.round(target), 25, 99));
+  // keep the league's rating distribution steady (no creeping inflation or deflation), position by position
+  normalizeOvrs(entries);
+  for (const e of entries) {
+    const p = e.p;
+    const hidden = (p.r.tal ?? p.r.ovr) - p.r.ovr;
+    setOvr(p, e.newOvr);
+    p.r.tal = clamp(e.newOvr + hidden * 0.5 + gauss(0, 0.8), 25, 99.5);
     p.r.ovrStart = p.r.ovr;
-    p.r.pot = Math.max(p.r.tal, projectPeak(p.pos, p.r.tal, age(p, s), p.pers?.work ?? 0.5));
-    p.r.potEst = clamp(p.r.pot + gauss(0, 3), 30, 99);
+    p.r.pot = Math.max(p.r.ovr, projectPeak(p.pos, p.r.ovr, age(p, s), p.pers?.work ?? 0.5, p.dev));
+    p.r.potEst = clamp(p.r.pot + gauss(0, 2.5), 30, 99);
   }
+  devChanges(entries);
+}
+
+function normalizeOvrs(entries) {
+  const Lg = G.L;
+  const ref = Lg.refDist;
+  if (!ref) return;
+  const b = 0.5 * (Lg.settings.sliders.ratingInflationControl ?? 1);
+  const byPos = {};
+  for (const e of entries) if (e.p.tid >= 0) (byPos[e.p.pos] ||= []).push(e);
+  for (const pos in byPos) {
+    const r = ref[pos];
+    if (!r?.length) continue;
+    const grp = byPos[pos].sort((x, y) => y.newOvr - x.newOvr);
+    grp.forEach((e, i) => {
+      const q = i / Math.max(1, grp.length - 1);
+      const target = r[Math.min(r.length - 1, Math.round(q * (r.length - 1)))];
+      // only correct drift beyond 2 points, so individual stories survive
+      const gap = target - e.newOvr;
+      if (Math.abs(gap) > 1) e.newOvr = clamp(Math.round(e.newOvr + (gap - Math.sign(gap)) * b), 25, 99);
+    });
+  }
+}
+export function captureRefDist() {
+  const Lg = G.L;
+  const byPos = {};
+  for (const p of Object.values(Lg.players)) if (p.tid >= 0) (byPos[p.pos] ||= []).push(p.r.ovr);
+  Lg.refDist = {};
+  for (const pos in byPos) Lg.refDist[pos] = byPos[pos].sort((a, b) => b - a);
 }
 
 // Keep every position's talent distribution matched to the realistic reference curve (no inflation)
