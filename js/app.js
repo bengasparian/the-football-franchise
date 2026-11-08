@@ -1,6 +1,6 @@
 // App shell: router, header with sim controls, sidebar, start screen, settings, online.
 import { call, session, net, host, join, claim, onNet, sendChat, setReady, guestStatus, leaveOnline, setToastHandler, clearReady } from './client.js';
-import { esc, $, $$, money, modal, closeModal, toast, busy, logo, setAccent, TABLES } from './ui.js';
+import { esc, $, $$, money, modal, closeModal, toast, busy, logo, setAccent, resetTheme, TABLES } from './ui.js';
 void $$;
 import { PAGES, ACTIONS as PA } from './pages.js';
 import { PAGES2, ACTIONS as PA2 } from './pages2.js';
@@ -52,7 +52,7 @@ export async function refreshHeader() {
   if (h && session.tid == null) session.tid = h.tid;
   if (h && !h.userTids.includes(session.tid) && net.mode !== 'guest') session.tid = h.userTids[0] ?? 0;
   drawTop(); drawSide();
-  if (h) setAccent(h.team.c1);
+  if (h) setAccent(h.team.c1, h.team.c2); else resetTheme();
   return h;
 }
 

@@ -150,14 +150,49 @@ export function bars(items, { max = null, h = 140 } = {}) {
     return `<rect x="${i * w + w * 0.15}" y="${h - 16 - bh}" width="${w * 0.7}" height="${bh}" fill="${x.c || 'var(--accent)'}" rx="1"><title>${esc(x.l)}: ${esc(x.t ?? x.v)}</title></rect>`;
   }).join('')}</svg><div class="row small muted" style="justify-content:space-between">${items.map((x) => `<span>${esc(x.l)}</span>`).join('')}</div>`;
 }
-export function setAccent(c1) {
-  if (!c1) return;
-  let c = c1;
-  // brighten very dark team colors so the accent stays readable on dark backgrounds
-  const n = parseInt(c.replace('#', ''), 16);
-  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-  if (lum < 70) { const k = 70 / Math.max(lum, 10); r = Math.min(255, r * k + 40); g = Math.min(255, g * k + 40); b = Math.min(255, b * k + 60); }
-  c = `rgb(${r | 0},${g | 0},${b | 0})`;
-  document.documentElement.style.setProperty('--accent', c);
+// ---------- team theme: the whole site takes on the controlled team's colors
+const hex2rgb = (h) => { const n = parseInt(String(h || '#3b82f6').replace('#', '').padEnd(6, '0').slice(0, 6), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+const lumOf = ([r, g, b]) => 0.299 * r + 0.587 * g + 0.114 * b;
+const satOf = ([r, g, b]) => { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx ? (mx - mn) / mx : 0; };
+const mix = (a, b, t) => a.map((v, i) => Math.round(v * (1 - t) + b[i] * t));
+const css = ([r, g, b]) => `rgb(${r},${g},${b})`;
+function lift(rgb, minLum = 95) { let c = rgb; let guard = 0; while (lumOf(c) < minLum && guard++ < 20) c = mix(c, [255, 255, 255], 0.12); return c; }
+let THEME_KEY = null;
+export function setTheme(c1, c2) {
+  const key = `${c1}|${c2}`;
+  if (key === THEME_KEY) return;
+  THEME_KEY = key;
+  const P = hex2rgb(c1), S = hex2rgb(c2 || c1);
+  // accent: the team color that reads best on a dark screen (Steelers gold, Raiders silver, Bears orange...)
+  const score = (c) => (lumOf(c) < 45 ? -1 : satOf(c) * 1.4 + Math.min(lumOf(c), 170) / 170 - (lumOf(c) > 225 ? 0.6 : 0));
+  const usePrimary = score(P) >= score(S) - 0.15;
+  const acc = lift(usePrimary ? P : S, 80);
+  const alt = usePrimary ? S : P;
+  const acc2 = lift(mix(acc, [255, 255, 255], 0.35), 150);
+  const second = lift(alt, 110);
+  // surfaces: a deep, team-tinted dark (black-primary teams get a neutral charcoal tinted by the second color)
+  const tint = lumOf(P) < 25 ? S : P;
+  const base = [8, 12, 22];
+  const bg = mix(base, tint, 0.10), bg2 = mix(base, tint, 0.15), panel = mix([14, 20, 36], tint, 0.16), panel2 = mix([20, 29, 50], tint, 0.20);
+  const line = mix([33, 47, 78], tint, 0.25), line2 = mix([43, 60, 98], tint, 0.30);
+  const R = document.documentElement.style;
+  R.setProperty('--accent', css(acc));
+  R.setProperty('--accent-rgb', acc.join(','));
+  R.setProperty('--accent2', css(acc2));
+  R.setProperty('--team2', css(second));
+  R.setProperty('--team1', css(lift(P, 40)));
+  R.setProperty('--team1-raw', c1 || '#1e3a8a');
+  R.setProperty('--team2-raw', c2 || '#c60c30');
+  R.setProperty('--on-accent', lumOf(acc) > 150 ? '#0b0f19' : '#ffffff');
+  R.setProperty('--bg', css(bg)); R.setProperty('--bg2', css(bg2));
+  R.setProperty('--panel', css(panel)); R.setProperty('--panel2', css(panel2));
+  R.setProperty('--line', css(line)); R.setProperty('--line2', css(line2));
+  const meta = document.querySelector('meta[name=theme-color]');
+  if (meta) meta.setAttribute('content', css(bg));
 }
+export function resetTheme() {
+  THEME_KEY = null;
+  const R = document.documentElement.style;
+  for (const k of ['--accent', '--accent-rgb', '--accent2', '--team2', '--team1', '--team1-raw', '--team2-raw', '--on-accent', '--bg', '--bg2', '--panel', '--panel2', '--line', '--line2']) R.removeProperty(k);
+}
+export const setAccent = (c1, c2) => setTheme(c1, c2);
