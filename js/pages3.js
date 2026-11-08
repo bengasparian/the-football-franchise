@@ -1,7 +1,7 @@
 // Madden-style screens: franchise hub, field depth chart, league schedule, weekly recap, awards race,
 // NFL history, franchise identity (relocate/rebrand), live free agency and the live draft room.
 import { call, session, net } from './client.js';
-import { esc, $, money, ovr, delta, hs, logo, pname, injBadge, meter, table, modal, closeModal, toast } from './ui.js';
+import { esc, $, money, ovr, delta, hs, logo, pname, injBadge, injText, meter, table, modal, closeModal, toast } from './ui.js';
 import { APP, act, rerender } from './app.js';
 import { newsList, gameCard } from './pages.js';
 
@@ -70,6 +70,7 @@ PAGES3.home = async () => {
     <div class="hub-side">
       <div class="card"><div class="card-h"><h2>To do</h2><span class="tiny muted">${esc(APP.header.phaseLabel)}</span></div>${todo}</div>
       ${d.events.length || d.offers.length ? `<div class="card"><h2>Needs your attention</h2>${d.events.map((e) => `<div class="evt"><h4>⚠️ ${esc(e.title)}</h4><div class="small" style="margin-bottom:8px">${esc(e.text)}</div><div class="row">${e.choices.map(([k, l]) => `<button class="btn sm" data-act="evt" data-id="${e.id}" data-c="${k}">${esc(l)}</button>`).join('')}</div></div>`).join('')}${d.offers.map((o) => `<div class="evt"><h4>📨 Offer from ${logo(o.from.logo, 'sm')} ${esc(o.from.abbr)}</h4><div class="small">They want <b>${o.getV.players.map((p) => esc(p.name)).join(', ')}${o.getV.picks.map((p) => esc(p.label)).join(', ')}</b> for <b>${[...o.giveV.players.map((p) => `${esc(p.name)} (${p.pos} ${p.ovr})`), ...o.giveV.picks.map((p) => esc(p.label))].join(', ')}</b></div><div class="row" style="margin-top:8px"><button class="btn sm pri" data-act="respondOffer" data-id="${o.id}" data-a="1">Accept</button><button class="btn sm" data-act="respondOffer" data-id="${o.id}" data-a="0">Decline</button></div></div>`).join('')}</div>` : ''}
+      <div class="card"><div class="card-h"><h2>Injury report</h2><a class="small" href="#/roster" title="Manage IR on your roster">Roster ›</a></div>${d.injured.length ? d.injured.sort((a, b) => (b.inj.se ? 99 : b.inj.wk) - (a.inj.se ? 99 : a.inj.wk)).slice(0, 8).map((p) => `<div class="mini-row" style="align-items:flex-start">${pname(p, { sub: `${p.pos}${p.status === 'IR' ? ' · IR' : ''}` })}<div class="r small" style="max-width:55%">${injText(p)}</div></div>`).join('') : '<div class="muted small">No injuries. Everyone is healthy.</div>'}</div>
       <div class="card"><div class="card-h"><h2>${esc(t.conf)} ${esc(t.div)}</h2><a class="small" href="#/standings">Standings ›</a></div>${d.divStand.map((x, i) => `<div class="mini-row ${x.tid === t.tid ? 'me' : ''}"><span class="dim">${i + 1}</span>${logo(x.logo, 'sm')}<a href="#/team/${x.tid}">${esc(x.abbr)}</a><span class="r">${rec(x)}</span></div>`).join('')}</div>
       <div class="card"><div class="card-h"><h2>Headlines</h2><a class="small" href="#/news">All news ›</a></div>${newsList(d.news.slice(0, 6))}</div>
     </div>

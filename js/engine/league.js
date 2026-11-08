@@ -227,7 +227,8 @@ function importRealSeasonStats(data, tidOf, S0) {
   for (const d of data.players) {
     const p = L.players[d.id];
     if (!p || !d.inj) continue;
-    p.inj = { type: d.inj.type, wk: d.inj.ir ? 4 + Math.floor(rnd() * 6) : d.inj.wk, s: S0, w: lastW, se: false };
+    p.inj = { type: d.inj.type, wk: d.inj.se ? 99 : d.inj.ir ? Math.max(2, (d.inj.wk || 5) + Math.round(rnd() * 3 - 1)) : d.inj.wk, s: S0, w: lastW, se: !!d.inj.se };
+    if (d.inj.ir) p.irWeek = Math.max(1, lastW - 1);
     if (p.status === 'IR') p.irWeek = Math.max(1, lastW - 3);
   }
 }

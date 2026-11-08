@@ -1,6 +1,6 @@
 // Team & league pages
 import { call, session, net } from './client.js';
-import { esc, $, $$, money, pct, ht, ovr, delta, hs, logo, pname, injBadge, moraleTxt, meter, contractTxt, table, modal, closeModal, toast, sparkline, bars } from './ui.js';
+import { esc, $, $$, money, pct, ht, ovr, delta, hs, logo, pname, injBadge, injText, moraleTxt, meter, contractTxt, table, modal, closeModal, toast, sparkline, bars } from './ui.js';
 import { APP, act, rerender, render } from './app.js';
 
 export const PAGES = {};
@@ -98,6 +98,7 @@ PAGES.roster = async ([tidS]) => {
   return `<div class="page-h">${logo(r.team.logo, 'md')}<h1>${esc(r.team.region)} ${esc(r.team.name)} Roster</h1><span class="sub">Team OVR ${r.team.ovr.ovr} · Cap space ${money(r.cap.space)}</span>
     <div class="right">${mine ? `<button class="btn" data-act="autoCut" data-tid="${tid}">Auto cutdown to ${r.rules.activeMax}</button>` : `<a class="btn" href="#/trade/${tid}">Trade with ${esc(r.team.abbr)}</a>`}<select data-change="rosterTeam">${(APP.teams || []).map((t) => `<option value="${t.tid}" ${t.tid === tid ? 'selected' : ''}>${esc(t.abbr)}</option>`).join('')}</select></div></div>
     <div class="tabs">${tabs.map(([k, l]) => `<a class="${rosterTab === k ? 'on' : ''}" data-act="rosterTab" data-k="${k}">${l}</a>`).join('')}</div>
+    ${(() => { const hurt = r.players.filter((p) => p.inj).sort((a, b) => (b.inj.se ? 99 : b.inj.wk) - (a.inj.se ? 99 : a.inj.wk)); return hurt.length ? `<div class="card"><div class="card-h"><h2>Injury report (${hurt.length})</h2><span class="tiny muted">Expected time missed</span></div><div class="grid g2">${hurt.map((p) => `<div class="mini-row">${pname(p, { sub: `${p.pos}${p.status === 'IR' ? ' · IR' : ''}` })}<div class="r small">${injText(p)}</div></div>`).join('')}</div></div>` : ''; })()}
     ${table({ cols, rows: list.map((p) => ({ ...p, _cls: p.status === 'IR' ? 'dim' : '' })), sort: { k: 'ovr', dir: 'desc' }, id: 'roster' })}`;
 };
 function rosterActions(p, r) {
@@ -159,6 +160,7 @@ PAGES.player = async ([pid]) => {
   const dr = p.draft ? (p.draft.r ? `${p.draft.y} Rd ${p.draft.r}, #${p.draft.p}${p.draft.tm ? ` (${esc(p.draft.tm)})` : ''}` : `${p.draft.y} UDFA`) : 'Undrafted';
   return `<div class="hero-team" style="--tc1:${esc(t?.c1 || '#1e293b')}">${hs(p.hs, 'lg', p)}<div><div class="small" style="color:rgba(255,255,255,.75)">${t ? `${logo(t.logo, 'sm')} <a href="#/team/${t.tid}" style="color:#fff">${esc(t.region)} ${esc(t.name)}</a>` : esc(p.status === 'PROSPECT' ? 'Draft prospect' : p.status === 'RET' ? 'Retired' : 'Free agent')} ${p.jn != null ? `· #${p.jn}` : ''}</div>
     <h1>${esc(p.name)}</h1><div class="small" style="color:rgba(255,255,255,.85)">${esc(p.pos)} · Age ${age} · ${ht(p.ht)}, ${p.wt || '—'} lbs · ${esc(p.college || '—')} · ${dr} · ${p.exp} yrs exp</div>
+    ${p.inj ? `<div class="small" style="margin-top:6px;color:#fecaca">🩹 ${injText(p)}${p.status === 'IR' ? ' · on injured reserve' : ''}</div>` : ''}
     <div class="row" style="margin-top:6px">${injBadge(p)} ${p.holdout ? '' : ''} ${p.tradeReq ? '<span class="badge red">Requested trade</span>' : ''} ${p.hof ? `<span class="badge pur">Hall of Fame ${p.hof}</span>` : ''} ${(p.pers || []).slice(0, 3).map((x) => `<span class="badge blu" title="${esc(x.d)}">${esc(x.l)}</span>`).join(' ')}</div></div>
     <div class="stats">${p.status !== 'PROSPECT' ? `<div><div class="l">Overall</div><div class="v">${ovr(p.ovr, 'lg')}${delta(p.ovrDelta)}</div></div><div><div class="l">Potential</div><div class="v" style="font-size:20px">${esc(p.pot || 'Established')}</div></div>` : `<div><div class="l">Big board</div><div class="v">${p.scouted ? '' : ''}</div></div>`}${p.dev ? `<div title="${esc(p.devInfo || '')}"><div class="l">Dev trait</div><div class="v" style="font-size:20px">${esc(p.dev)}</div></div>` : ''}${p.lon != null ? `<div title="Longevity: how long his body holds up. Drops with serious injuries, recovers a little with healthy seasons."><div class="l">Longevity</div><div class="v" style="font-size:20px">${p.lon} <span class="small">${esc(p.lonLabel || '')}</span></div></div>` : ''}<div title="Happiness with his role, contract, the team's success and the coaching staff"><div class="l">Morale</div><div class="v" style="font-size:18px">${moraleTxt(p.morale)}</div></div>${p.contract ? `<div><div class="l">Contract</div><div class="v" style="font-size:20px">${money(p.contract.apy)}<span class="small"> /yr</span></div><div class="small">thru ${p.contract.exp}</div></div>` : ''}</div></div>
     ${playerButtons(p)}

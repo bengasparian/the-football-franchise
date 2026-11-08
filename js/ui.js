@@ -80,8 +80,11 @@ export function pname(p, { link = true, sub = null, img = true } = {}) {
 export function injBadge(p) {
   if (p.holdout) return '<span class="badge yel">HOLDOUT</span>';
   if (!p.inj) return '';
-  if (p.status === 'IR') return `<span class="badge red" title="${esc(p.inj.type)}">IR</span>`;
-  return `<span class="badge red" title="${esc(p.inj.type)}">${p.inj.se ? 'OUT (season)' : p.inj.wk > 0 ? `OUT ${p.inj.wk}w` : 'Q'}</span>`;
+  const i = p.inj;
+  const tip = `${i.type}: ${i.out || ''}${i.ret ? ` · ${i.ret}` : ''}`;
+  const len = i.se || i.short === 'Season' ? 'season' : i.short && i.short !== 'Q' ? i.short : '';
+  if (p.status === 'IR') return `<span class="badge red" title="${esc(tip)}">IR${len ? ` · ${len}` : ''}</span>`;
+  return `<span class="badge ${i.short === 'Q' ? 'yel' : 'red'}" title="${esc(tip)}">${i.short === 'Q' ? 'Q' : `OUT ${len}`}</span>`;
 }
 export function moraleTxt(m) {
   if (m == null) return '—';
@@ -196,3 +199,9 @@ export function resetTheme() {
   for (const k of ['--accent', '--accent-rgb', '--accent2', '--team2', '--team1', '--team1-raw', '--team2-raw', '--on-accent', '--bg', '--bg2', '--panel', '--panel2', '--line', '--line2']) R.removeProperty(k);
 }
 export const setAccent = (c1, c2) => setTheme(c1, c2);
+
+// Long form for lists and the player card: "Torn ACL · Out for the season · Expected back next season"
+export function injText(p) {
+  if (!p.inj) return '';
+  return `${esc(p.inj.type)} · ${esc(p.inj.out || '')}${p.inj.ret ? ` · <span class="muted">${esc(p.inj.ret)}</span>` : ''}`;
+}

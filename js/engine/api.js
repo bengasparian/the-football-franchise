@@ -38,6 +38,26 @@ function own(ctx, tid) {
 }
 function requireOwn(ctx, tid) { if (!own(ctx, tid)) throw new Error('You can only manage your own team.'); }
 
+// Expected time missed and return date for an injured player.
+export function injOutlook(p) {
+  const Lg = L();
+  const m = Lg.meta, inj = p.inj;
+  if (!inj) return {};
+  const inSeason = m.phase === 'REGULAR_SEASON' || m.phase === 'PRESEASON' || m.phase === 'PLAYOFFS';
+  let wk = inj.se ? 99 : inj.wk;
+  if (p.status === 'IR' && !inj.se) wk = Math.max(wk, (Lg.rules.irMinGames || 4) - (m.week - (p.irWeek ?? m.week)));
+  if (inj.se || wk >= 30) {
+    return { out: 'Out for the season', ret: inSeason ? `Expected back next season` : 'Expected back by training camp', short: 'Season' };
+  }
+  if (wk <= 0) return { out: 'Questionable', ret: 'Could play this week', short: 'Q' };
+  if (!inSeason) return { out: `Out ${wk} week${wk > 1 ? 's' : ''}`, ret: 'Expected back by training camp', short: `${wk}w` };
+  const weeks = Lg.rules.weeks || 18;
+  let ret;
+  if (m.phase === 'REGULAR_SEASON') { const back = m.week + wk; ret = back <= weeks ? `Expected back Week ${back}` : back <= weeks + 4 ? 'Expected back for the playoffs' : 'Expected back next season'; }
+  else if (m.phase === 'PRESEASON') ret = wk <= 3 - (m.week - 1) ? 'Expected back for Week 1' : `Expected back Week ${Math.max(1, wk - (3 - m.week))}`;
+  else ret = wk <= 4 ? `Could return in ${wk} round${wk > 1 ? 's' : ''}` : 'Expected back next season';
+  return { out: `Out ${wk} week${wk > 1 ? 's' : ''}`, ret, short: `${wk}w` };
+}
 export function pRow(p, extra = {}) {
   const Lg = L();
   const s = Lg.meta.season;
@@ -46,7 +66,7 @@ export function pRow(p, extra = {}) {
   return {
     pid: p.pid, name: `${p.fn} ${p.ln}`, fn: p.fn, ln: p.ln, pos: p.pos, tid: p.tid, team: p.tid >= 0 ? T(p.tid).abbr : null, status: p.status,
     age: age(p), ovr: p.r.ovr, pot: potLabel(p), exp: p.exp, jn: p.jn, hs: p.hs, ht: p.ht, wt: p.wt, college: p.college,
-    inj: p.inj && (p.inj.wk > 0 || p.inj.se) ? { type: p.inj.type, wk: p.inj.wk, se: p.inj.se } : null,
+    inj: p.inj && (p.inj.wk > 0 || p.inj.se) ? { type: p.inj.type, wk: p.inj.wk, se: p.inj.se, ...injOutlook(p) } : null,
     morale: p.morale, holdout: !!p.holdout, tradeReq: !!p.tradeReq, onBlock: !!p.onBlock,
     contract: c ? { apy: c.apy, exp: c.exp, yrsLeft: c.ps ? 0 : c.exp - capSeason() + 1, hit: c.ps ? c.ps : capHit(p, capSeason()), gtd: c.gtd, rookie: !!c.rookie, tag: c.tag || null, ps: !!c.ps, option5: c.option5 || null } : null,
     g: st?.g || 0, line: st ? statSummary(p, st) : '', ovrDelta: p.r.ovr - (p.r.ovrStart ?? p.r.ovr), draft: p.draft || null,

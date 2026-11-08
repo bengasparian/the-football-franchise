@@ -621,8 +621,20 @@ if os.environ.get("DEBUG_NAMES"):
         if nm in os.environ["DEBUG_NAMES"].split(","):
             print("DBG", nm, p["pos"], "prod", p["prod"] and round(p["prod"], 2), "samp", round(p["psamp"], 2), "usage_z", p.get("usage_z") and round(p["usage_z"], 2), "mkt_z", p.get("mkt_z") and round(p["mkt_z"], 2), "rep_z", round(p["rep_z"], 2), "score", round(p["score"], 2), "ovr0", round(p["ovr0"], 1), "ea", EA.get(p["gid"]), "final", p["ovr"], {y: {k: round(v, 2) for k, v in m.items() if v == v} for y, (m, _) in p["m"].items()})
 # ---------------------------------------------------------------- injuries (latest report)
-inj = D["injuries"]
-inj = inj[inj.week == inj.week.max()] if len(inj) else inj
+inj_all = D["injuries"]
+inj = inj_all[inj_all.week == inj_all.week.max()] if len(inj_all) else inj_all
+# most recent listed injury for every player (IR players drop off the weekly report, so look back)
+LAST_INJ = {}
+if len(inj_all):
+    for _, i in inj_all.sort_values("week").iterrows():
+        t = i.report_primary_injury if isinstance(i.report_primary_injury, str) else (i.practice_primary_injury if isinstance(i.practice_primary_injury, str) else None)
+        if t: LAST_INJ[i.gsis_id] = (t, int(i.week))
+def ir_outlook(t):
+    t0 = (t or "").lower()
+    if any(k in t0 for k in ("acl", "achilles", "torn", "rupture")): return {"wk": 99, "se": True}
+    if any(k in t0 for k in ("fracture", "broken", "fibula", "tibia", "lisfranc", "pectoral")): return {"wk": 7}
+    if any(k in t0 for k in ("knee", "hamstring", "ankle", "shoulder", "foot", "calf", "groin", "quad")): return {"wk": 5}
+    return {"wk": 4}
 INJ = {}
 for _, i in inj.iterrows():
     if i.report_status in ("Out", "Doubtful"):
@@ -711,7 +723,9 @@ for p in players:
     if gid in INJ and r.gstatus != "IR":
         o["inj"] = INJ[gid]
     if r.gstatus == "IR":
-        o["inj"] = {"type": "Injured Reserve", "wk": 5, "ir": True}
+        li = LAST_INJ.get(gid)
+        t = li[0] if li else "Undisclosed"
+        o["inj"] = {"type": t, "ir": True, **ir_outlook(t)}
     car = career(gid)
     if car:
         o["car"] = car
