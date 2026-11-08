@@ -25,7 +25,7 @@ async def main():
         if await pg.query_selector('#tour'): errors.append('tour still open')
         await pg.screenshot(path='/tmp/s_home.png', full_page=False)
         await pg.click('#helpBtn'); await pg.wait_for_timeout(400); await pg.screenshot(path='/tmp/s_help.png'); await pg.keyboard.press('Escape')
-        routes = ['roster','depth','schedule','standings','recap','awards','stats','teams','news','history','cap','staff','owner','trade','finder','offers','fa','draft','rules','franchise','settings','online']
+        routes = ['roster','depth','lineup','schedule','standings','recap','awards','stats','teams','news','history','cap','staff','owner','trade','finder','offers','fa','draft','rules','franchise','settings','online']
         for r in routes:
             await pg.goto(URL + '#/' + r); await pg.wait_for_timeout(700)
             txt = await pg.inner_text('#main')
@@ -50,8 +50,11 @@ async def main():
             await pg.screenshot(path='/tmp/s_box.png')
             await pg.keyboard.press('Escape')
         await pg.goto(URL + '#/depth'); await pg.wait_for_timeout(600)
-        await pg.click('.slot >> nth=1'); await pg.wait_for_timeout(500)
+        await pg.click('[data-act=depthPos][data-p=OT]'); await pg.wait_for_timeout(500)
         await pg.screenshot(path='/tmp/s_depth.png')
+        await pg.goto(URL + '#/lineup'); await pg.wait_for_timeout(600)
+        await pg.click('.slot >> nth=1'); await pg.wait_for_timeout(500)
+        await pg.screenshot(path='/tmp/s_lineup.png')
         await pg.goto(URL + '#/recap'); await pg.wait_for_timeout(600); await pg.screenshot(path='/tmp/s_recap.png')
         await pg.goto(URL + '#/awards'); await pg.wait_for_timeout(600); await pg.screenshot(path='/tmp/s_awards.png')
         await pg.goto(URL + '#/history'); await pg.wait_for_timeout(600); await pg.screenshot(path='/tmp/s_hist.png')

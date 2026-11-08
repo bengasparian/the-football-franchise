@@ -56,7 +56,7 @@ PAGES3.home = async () => {
     <div class="hub-main">${feature}
       <div class="tiles">
         ${T('#/roster', '🏈', 'Roster', `${d.counts.ACT || 0}/53 active · ${d.counts.PS || 0} PS`, 'Your players, contracts and roster moves')}
-        ${T('#/depth', '📋', 'Depth Chart', 'Set your starters', 'Who starts at every spot on the field')}
+        ${T('#/lineup', '📋', 'Adjust Lineup', 'Set your starters on the field', 'Pick who lines up at every spot: LT, slot, nickel and more')}
         ${T('#/trade', '🔁', 'Trade Center', 'Build a deal', 'Trade players and picks with any team')}
         ${T('#/fa', '✍️', 'Free Agency', ph === 'FREE_AGENCY' ? 'LIVE now' : 'Available players', 'Sign free agents')}
         ${T('#/draft', '🎯', 'Draft & Scouting', ph === 'DRAFT' ? 'LIVE now' : 'Scout prospects', 'Scout the next draft class')}
@@ -84,7 +84,7 @@ const UNITS = {
   st: { label: 'Special Teams', slots: [['K', 0, 'K', 30, 40], ['P', 0, 'P', 50, 40], ['LS', 0, 'LS', 70, 40], ['KR', 0, 'KR', 40, 76], ['PR', 0, 'PR', 60, 76]] },
 };
 let depthPick = null; // {pos, i}
-PAGES3.depth = async ([tidS]) => {
+PAGES3.lineup = async ([tidS]) => {
   const tid = tidS ? +tidS : session.tid;
   const d = await call('depth', { tid });
   const U = UNITS[depthUnit];
@@ -99,7 +99,7 @@ PAGES3.depth = async ([tidS]) => {
   const focusPos = depthPick?.pos || U.slots[0][0];
   const list = d.depth[focusPos] || [];
   const cands = d.pool.filter((p) => !list.slice(0, 1).find((x) => x.pid === p.pid)).sort((a, b) => (b.pos === focusPos) - (a.pos === focusPos) || b.ovr - a.ovr);
-  return `<div class="page-h"><h1>Depth Chart</h1><span class="sub">${esc(d.team.region)} ${esc(d.team.name)} · ${d.locked ? 'your order is locked in' : 'auto-managed by your staff'}</span><div class="right">${d.mine ? '<button class="btn" data-act="depthAuto" title="Let your coaches set the best lineup at every position">Auto-set all</button>' : ''}</div></div>
+  return `<div class="page-h"><h1>Adjust Lineup</h1><span class="sub">${esc(d.team.region)} ${esc(d.team.name)} · ${d.locked ? 'your order is locked in' : 'auto-managed by your staff'}</span><div class="right"><a class="btn" href="#/depth" title="The full position-by-position depth chart">Depth Chart</a>${d.mine ? '<button class="btn" data-act="depthAuto" title="Let your coaches set the best lineup at every position">Auto-set all</button>' : ''}</div></div>
     <div class="tabs">${Object.entries(UNITS).map(([k, u]) => `<a class="${depthUnit === k ? 'on' : ''}" data-act="depthUnit" data-k="${k}">${u.label}</a>`).join('')}</div>
     <div class="grid g21">
       <div class="field ${depthUnit}">${depthUnit !== 'st' ? '<div class="los"></div>' : ''}${U.slots.map(slot).join('')}</div>
