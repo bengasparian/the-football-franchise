@@ -132,6 +132,7 @@ function afterWeek() {
   computeStandings();
   weeklyInjuryUpdate();
   processWaivers();
+  { const up = Lg.settings.sliders.upsetFactor ?? 1; for (const t of Lg.teams) t.sf = clamp((t.sf || 0) * 0.97 + gauss(0, 0.45 * up), -5 * up, 5 * up); }
   const byTeam = {};
   for (const p of Object.values(Lg.players)) if (p.tid >= 0) (byTeam[p.tid] ||= []).push(p);
   for (const t of Lg.teams) aiWeekly(t.tid, byTeam[t.tid] || []);

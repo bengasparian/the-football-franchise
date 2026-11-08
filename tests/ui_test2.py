@@ -28,6 +28,7 @@ async def main():
         await pg.click('[data-act=pickTeam][data-abbr=CHI]')
         await pg.click('[data-act=createLeague]')
         await pg.wait_for_timeout(4000)
+        if await pg.query_selector('#tourSkip'): await pg.click('#tourSkip')
         await pg.goto(URL + '#/fantasy'); await pg.wait_for_timeout(1500); await check(pg, 'fantasy')
         await pg.screenshot(path='/tmp/u_fantasy.png')
         pg.once('dialog', lambda d: asyncio.ensure_future(d.accept()))

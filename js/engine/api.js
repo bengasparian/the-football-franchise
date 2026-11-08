@@ -27,9 +27,9 @@ const T = (tid) => G.L.teams[tid];
 const tName = (tid) => (tid == null || tid < 0 ? 'Free Agent' : `${T(tid).region} ${T(tid).name}`);
 const teamLite = (t) => ({ tid: t.tid, abbr: t.abbr, region: t.region, name: t.name, c1: t.c1, c2: t.c2, logo: t.logo, conf: t.conf, div: t.div });
 
+// A GM may only manage the team they are currently controlling (host status does NOT grant access to other teams)
 function own(ctx, tid) {
-  if (ctx?.host || ctx?.admin) return true;
-  return ctx?.tid === tid && L().meta.userTids.includes(tid);
+  return tid != null && tid >= 0 && ctx?.tid === tid && L().meta.userTids.includes(tid);
 }
 function requireOwn(ctx, tid) { if (!own(ctx, tid)) throw new Error('You can only manage your own team.'); }
 
@@ -358,6 +358,7 @@ export function faList({ pos = 'ALL', limit = 400 } = {}, ctx) {
 export function withdrawOffer({ pid }, ctx) { const Lg = L(); if (Lg.fa?.offers?.[pid]) Lg.fa.offers[pid] = Lg.fa.offers[pid].filter((o) => o.tid !== ctx.tid); return { ok: true }; }
 export function signMin({ pid }, ctx) {
   const Lg = L(); const p = Lg.players[pid];
+  requireOwn(ctx, ctx.tid);
   if (p.tid !== -1) return { error: 'Not a free agent' };
   const ask = playerAsk(p, ctx.tid, { fa: true });
   const minOk = ask.apy <= minDeal(p, capSeason()).apy * 1.15 || p.udfa;
@@ -366,6 +367,7 @@ export function signMin({ pid }, ctx) {
 }
 export function signToPS({ pid }, ctx) {
   const Lg = L(); const p = Lg.players[pid];
+  requireOwn(ctx, ctx.tid);
   if (p.tid !== -1) return { error: 'Not a free agent' };
   const tid = ctx.tid;
   const n = Object.values(Lg.players).filter((x) => x.tid === tid && x.status === 'PS').length;
@@ -385,6 +387,8 @@ export function tradeAssets({ tid }, ctx) {
 export function tradeEval({ aiTid, give, get }, ctx) { return evaluateTrade(ctx.tid, aiTid, give, get); }
 export function tradePropose({ aiTid, give, get }, ctx) {
   const Lg = L();
+  requireOwn(ctx, ctx.tid);
+  if (aiTid === ctx.tid) return { error: 'You cannot trade with yourself.' };
   if (Lg.meta.userTids.includes(aiTid)) {
     // human-to-human trade (online or local multi-team): needs the other GM to accept
     const id = `o${Date.now().toString(36)}`;
@@ -443,7 +447,7 @@ export function draftBoard({ pos = 'ALL' } = {}, ctx) {
   };
 }
 function projRound(rank) { return rank <= 32 ? '1st' : rank <= 64 ? '2nd' : rank <= 100 ? '3rd' : rank <= 140 ? '4th' : rank <= 180 ? '5th' : rank <= 220 ? '6th' : rank <= 262 ? '7th' : 'UDFA'; }
-export function scout({ pid }, ctx) { return scoutProspect(ctx.tid, pid); }
+export function scout({ pid }, ctx) { requireOwn(ctx, ctx.tid); return scoutProspect(ctx.tid, pid); }
 export function boardToggle({ pid }, ctx) { const t = T(ctx.tid); t.board ||= []; t.board = t.board.includes(pid) ? t.board.filter((x) => x !== pid) : [...t.board, pid]; return { ok: true }; }
 export function boardMove({ pid, dir }, ctx) { const t = T(ctx.tid); const b = t.board || []; const i = b.indexOf(pid); const j = i + dir; if (i < 0 || j < 0 || j >= b.length) return { ok: true }; [b[i], b[j]] = [b[j], b[i]]; return { ok: true }; }
 export function draftState(_, ctx) {
@@ -466,11 +470,15 @@ export function draftSim({ all = false }, ctx) { if (!ctx.host) { const up = use
 export function draftAuto(_, ctx) { const up = userOnClock(); if (!up || !own(ctx, up.tid)) return { error: 'Not on the clock' }; return draftCurrentPick(null); }
 
 // ------------------------------------------------------------------ fantasy draft
-export function fantasyState({ pos = 'ALL' } = {}, ctx) {
+export function fantasyState({ pos = 'ALL', q = '' } = {}, ctx) {
   const Lg = L();
   const F = Lg.fantasy;
   let pool = fantasyPool();
-  if (pos !== 'ALL') pool = pool.filter((p) => p.pos === pos);
+  if (pos === 'OL') pool = pool.filter((p) => ['OT', 'OG', 'C'].includes(p.pos));
+  else if (pos === 'ST') pool = pool.filter((p) => ['K', 'P', 'LS'].includes(p.pos));
+  else if (pos !== 'ALL') pool = pool.filter((p) => p.pos === pos);
+  const qq = String(q || '').trim().toLowerCase();
+  if (qq) pool = pool.filter((p) => `${p.fn} ${p.ln}`.toLowerCase().includes(qq));
   pool.sort((a, b) => b.r.ovr - a.r.ovr);
   const mine = Object.values(Lg.players).filter((p) => p.tid === ctx.tid);
   return { F: F ? { round: F.round, idx: F.idx, done: F.done, rounds: F.rounds } : null, onClock: fantasyOnClock(), mineOnClock: fantasyOnClock() === ctx.tid, pool: pool.slice(0, 300).map((p) => pRow(p)), mine: mine.map((p) => pRow(p)), log: (F?.log || []).slice(-60).reverse().map((x) => ({ ...x, name: `${Lg.players[x.pid].fn} ${Lg.players[x.pid].ln}`, pos: Lg.players[x.pid].pos, ovr: Lg.players[x.pid].r.ovr, abbr: T(x.tid).abbr })), order: F?.order.map((t) => T(t).abbr) };
@@ -496,9 +504,10 @@ export function hire({ cid, role }, ctx) {
   if (!['SEASON_END', 'RESIGN', 'FREE_AGENCY', 'LEAGUE_MEETING', 'DRAFT', 'POST_DRAFT', 'TRAINING_CAMP'].includes(Lg.meta.phase) && role === 'HC') {
     // allow interim changes in season
   }
+  requireOwn(ctx, ctx.tid);
   return hireCoach(ctx.tid, cid, role);
 }
-export function fire({ role }, ctx) { return fireCoach(ctx.tid, role); }
+export function fire({ role }, ctx) { requireOwn(ctx, ctx.tid); return fireCoach(ctx.tid, role); }
 export function finances({ tid }, ctx) {
   const Lg = L();
   tid = tid ?? ctx.tid;
@@ -506,6 +515,7 @@ export function finances({ tid }, ctx) {
   return { team: teamLite(t), fin: t.fin, owner: t.owner, jobSec: t.jobSec, goals: t.goals, goalResults: t.goalResults, stadium: t.stadium, market: t.market, att: attendanceFor(t), rev: homeGameRevenue(t), mine: own(ctx, tid), season: Lg.meta.season, ref: Math.round(110 + Math.log1p(t.market) * 38) };
 }
 export function setPrices({ ticket, concessions, parking }, ctx) {
+  requireOwn(ctx, ctx.tid);
   const t = T(ctx.tid);
   if (ticket != null) t.fin.ticket = clamp(Math.round(ticket), 40, 600);
   if (concessions != null) t.fin.concessions = clamp(concessions, 0.6, 1.6);
@@ -518,7 +528,7 @@ export function rulesView(_, ctx) {
   const Lg = L();
   return { rules: Lg.rules, proposals: Lg.proposals, history: Lg.ruleHistory || [], phase: Lg.meta.phase, available: PROPOSALS.filter((p) => p.cond(Lg.rules)).map((p) => ({ id: p.id, title: p.title, desc: p.desc })), myTid: ctx.tid };
 }
-export function vote({ id, yes }, ctx) { return castVote(ctx.tid, id, yes); }
+export function vote({ id, yes }, ctx) { requireOwn(ctx, ctx.tid); return castVote(ctx.tid, id, yes); }
 export function propose({ id }, ctx) { if (G.L.meta.phase !== 'LEAGUE_MEETING' || G.L.proposals?.done) return { error: 'Proposals can only be submitted during the Annual League Meeting.' }; return userPropose(ctx.tid, id); }
 export function history() {
   const Lg = L();

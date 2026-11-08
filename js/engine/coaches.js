@@ -12,6 +12,21 @@ export const REAL_DC = { BUF: 'Jim Leonhard', MIA: 'Sean Duggan', NE: 'Zak Kuhr'
   KC: 'Steve Spagnuolo', LV: 'Rob Leonard', LAC: "Chris O'Leary", DAL: 'Christian Parker', NYG: 'Dennard Wilson', PHI: 'Vic Fangio', WAS: 'Daronte Jones',
   CHI: 'Dennis Allen', DET: 'Kelvin Sheppard', GB: 'Jonathan Gannon', MIN: 'Brian Flores', ATL: 'Jeff Ulbrich', CAR: 'Todd Wash', NO: 'Brandon Staley',
   TB: 'Todd Bowles', ARI: 'Nick Rallis', LAR: 'Chris Shula', SF: 'Raheem Morris', SEA: 'Aden Durde' };
+// Coordinator reputation (track record before 2026), blended with how the unit is performing this season
+const REP_DC = { 'Vic Fangio': 90, 'Steve Spagnuolo': 89, 'Brian Flores': 88, 'Vance Joseph': 86, 'Aden Durde': 85, 'Patrick Graham': 85, 'Chris Shula': 83,
+  'Lou Anarumo': 82, 'Dennis Allen': 82, 'Todd Bowles': 82, 'Jim Leonhard': 80, 'Raheem Morris': 80, 'Kelvin Sheppard': 80, 'Matt Burke': 80, 'Al Golden': 79,
+  'Gus Bradley': 79, 'Jonathan Gannon': 78, 'Anthony Weaver': 78, 'Anthony Campanile': 78, 'Brandon Staley': 77, 'Christian Parker': 75, 'Rob Leonard': 74,
+  "Chris O'Leary": 74, 'Dennard Wilson': 74, 'Jeff Ulbrich': 74, 'Nick Rallis': 75, 'Zak Kuhr': 74, 'Todd Wash': 73, 'Daronte Jones': 72, 'Brian Duker': 72,
+  'Mike Rutenberg': 72, 'Sean Duggan': 71 };
+const REP_OC = { 'Mike McDaniel': 86, 'Josh McDaniels': 82, 'Brian Daboll': 82, 'Pete Carmichael Jr.': 80, 'Klay Kubiak': 80, 'Zac Robinson': 80, 'Eric Bieniemy': 79,
+  'Wes Phillips': 79, 'Grant Udinski': 79, 'Frank Reich': 78, 'Drew Petzing': 78, 'Dan Pitcher': 78, 'Brian Fleury': 78, 'Adam Stenavich': 77, 'Jim Bob Cooter': 77,
+  'Matt Nagy': 76, 'Press Taylor': 76, 'Bobby Slowik': 76, 'Nick Caley': 76, 'Davis Webb': 76, 'Klayton Adams': 76, 'Tommy Rees': 76, 'Nathan Scheelhaase': 75,
+  'Nathaniel Hackett': 74, 'Declan Doyle': 74, 'Brian Angelichio': 72, 'Andrew Janocko': 72, 'Sean Mannion': 72, 'David Blough': 72, 'Doug Nussmeier': 72, 'Travis Switzer': 70, 'Brad Idzik': 70 };
+const REP_HC = { 'Andy Reid': 95, 'Sean McVay': 90, 'John Harbaugh': 89, 'Kyle Shanahan': 88, 'Jim Harbaugh': 88, 'Sean Payton': 87, 'Mike Macdonald': 87,
+  'Nick Sirianni': 86, 'Dan Campbell': 86, "Kevin O'Connell": 85, 'Mike Vrabel': 85, 'Ben Johnson': 84, 'Matt LaFleur': 83, 'Sean McDermott': 83, 'Mike McCarthy': 81,
+  'DeMeco Ryans': 82, 'Liam Coen': 80, 'Kevin Stefanski': 80, 'Mike Tomlin': 88, 'Dan Quinn': 78, 'Robert Saleh': 78, 'Jesse Minter': 77, 'Zac Taylor': 76,
+  'Todd Bowles': 76, 'Shane Steichen': 76, 'Todd Monken': 76, 'Kellen Moore': 76, 'Klint Kubiak': 76, 'Brian Daboll': 74, 'Joe Brady': 77, 'Dave Canales': 74,
+  'Jeff Hafley': 74, 'Mike Kafka': 72, 'Jonathan Gannon': 72, 'Aaron Glenn': 73, 'Brian Schottenheimer': 74, 'Raheem Morris': 73, 'Pete Carroll': 82, 'Brian Callahan': 70 };
 // head coaches whose background is offense (play-callers); others lean defense
 const OFF_HC = new Set(['Sean McVay', 'Kyle Shanahan', 'Matt LaFleur', "Kevin O'Connell", 'Ben Johnson', 'Sean Payton', 'Andy Reid', 'Zac Taylor', 'Shane Steichen',
   'Dave Canales', 'Klint Kubiak', 'Todd Monken', 'Joe Brady', 'Mike McCarthy', 'Liam Coen', 'Kevin Stefanski', 'Nick Sirianni', 'Brian Daboll', 'Mike LaFleur',
@@ -37,7 +52,13 @@ function mkCoach({ name, role, tid, base = 70, rec = null, offLean = null, ageY 
   return c;
 }
 
-export function initCoaches(dataCoaches) {
+function setRating(c, r) {
+  // shape the coach so his role overall lands on the target rating
+  if (c.role === 'OC') { c.off = Math.round(clamp(r + gauss(0, 1.5), 50, 97)); c.def = Math.round(clamp(r - 12 + gauss(0, 4), 40, 90)); }
+  else { c.def = Math.round(clamp(r + gauss(0, 1.5), 50, 97)); c.off = Math.round(clamp(r - 12 + gauss(0, 4), 40, 90)); }
+  c.dev = Math.round(clamp(r + gauss(0, 3), 50, 97)); c.gm = Math.round(clamp(r - 2 + gauss(0, 3), 50, 97));
+}
+export function initCoaches(dataCoaches, unit = null) {
   const Lg = G.L;
   Lg.coaches = {};
   for (const t of Lg.teams) {
@@ -47,10 +68,19 @@ export function initCoaches(dataCoaches) {
       const g = d.w + d.l + d.t;
       const wp = (d.w + 0.5 * d.t + 8) / (g + 16);
       hcBase = clamp(62 + (wp - 0.5) * 80 + d.sb * 3 + Math.min(d.pw, 20) * 0.5 + Math.min(d.yrs, 12) * 0.5, 58, 94);
+      if (REP_HC[d.name] != null) hcBase = REP_HC[d.name] * 0.65 + hcBase * 0.35;
     }
     const hc = mkCoach({ name: d?.name || genName(), role: 'HC', tid: t.tid, base: hcBase, rec: d ? { w: d.w, l: d.l, t: d.t, pw: d.pw, pl: d.pl, sb: d.sb, yrs: d.yrs } : null, offLean: d ? (OFF_HC.has(d.name) ? 1 : 0) : null });
-    const oc = mkCoach({ name: REAL_OC[t.abbr] || genName(), role: 'OC', tid: t.tid, base: 70 + gauss(0, 4) });
-    const dc = mkCoach({ name: REAL_DC[t.abbr] || genName(), role: 'DC', tid: t.tid, base: 70 + gauss(0, 4) });
+    hc.gm = Math.round(clamp(hcBase + gauss(0, 1.5), 50, 97)); hc.dev = Math.round(clamp(hcBase + gauss(0, 2.5), 50, 97));
+    const lean = OFF_HC.has(hc.name) ? 1 : 0;
+    hc.off = Math.round(clamp(hcBase + (lean ? 4 : -4) + gauss(0, 1.5), 45, 98)); hc.def = Math.round(clamp(hcBase + (lean ? -4 : 4) + gauss(0, 1.5), 45, 98));
+    const u = unit?.[t.abbr];
+    const ocName = REAL_OC[t.abbr] || genName(), dcName = REAL_DC[t.abbr] || genName();
+    const ocRate = clamp((REP_OC[ocName] ?? 72) * 0.6 + (u ? u.off : 75) * 0.4, 60, 95);
+    const dcRate = clamp((REP_DC[dcName] ?? 72) * 0.6 + (u ? u.def : 75) * 0.4, 60, 95);
+    const oc = mkCoach({ name: ocName, role: 'OC', tid: t.tid, base: 70 });
+    const dc = mkCoach({ name: dcName, role: 'DC', tid: t.tid, base: 70 });
+    setRating(oc, ocRate); setRating(dc, dcRate);
     if (dc.name === hc.name) { dc.def = Math.max(dc.def, hc.def); }
     for (const c of [hc, oc, dc]) Lg.coaches[c.cid] = c;
     t.staff = { hc: hc.cid, oc: oc.cid, dc: dc.cid };

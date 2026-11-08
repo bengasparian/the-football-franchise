@@ -5,9 +5,31 @@ import { injuryTypeFor } from './injuries.js';
 const OFF_SLOTS = { QB: 1, RB: 2, WR: 4, TE: 2, OT: 2, OG: 2, C: 1, FB: 1 };
 const DEF_SLOTS = { EDGE: 3, DT: 3, LB: 3, CB: 4, S: 2 };
 
+// NFL parity: the gap between a great and an average player matters, but less than raw ratings
+// suggest (scheme, play-calling, health and luck even things out). Attributes are pulled toward the
+// league average for that position before they hit the play engine.
+const PARITY = 0.82;
+let MEAN = { key: null, m: {} };
+function attrMeans() {
+  const Lg = G.L;
+  const key = `${Lg.meta.season}-${Lg.meta.phase}-${Lg.meta.week}`;
+  if (MEAN.key === key) return MEAN.m;
+  const sum = {}, cnt = {};
+  for (const p of Object.values(Lg.players)) {
+    if (p.tid < 0 || p.status !== 'ACT' || p.r.ovr < 60) continue;
+    const S = (sum[p.pos] ||= {}); cnt[p.pos] = (cnt[p.pos] || 0) + 1;
+    for (const k in p.r.a) S[k] = (S[k] || 0) + p.r.a[k];
+  }
+  const m = {};
+  for (const pos in sum) { m[pos] = {}; for (const k in sum[pos]) m[pos][k] = sum[pos][k] / cnt[pos]; }
+  MEAN = { key, m };
+  return m;
+}
 function eff(p, k) {
-  // effective attribute: shown rating + hidden talent offset + morale/injury/form
-  return clamp((p.r.a[k] ?? 50) + p._off, 10, 110);
+  // effective attribute: shown rating + hidden talent offset + morale/injury/form, compressed toward the positional mean
+  const a = (p.r.a[k] ?? 50) + p._off;
+  const mu = MEAN.m[p.pos]?.[k];
+  return clamp(mu == null ? a : mu + (a - mu) * PARITY, 10, 110);
 }
 
 function buildUnit(tid, ctx) {
@@ -87,10 +109,12 @@ export function simGame(game, opts = {}) {
   const U = [H, A];
   for (const u of U) for (const p of u.all) inc(box, p, 'gp', 1);
   const S = { q: 1, clock: 900, score: [0, 0], off: 0, yl: 25, down: 1, dist: 10, to: [3, 3], ot: false, otPoss: [0, 0], otFirst: null, over: false, plays: 0, half2Kick: null };
+  attrMeans();
   const homeAdv = 1.6 * (sl.homeField ?? 1) * (game.neutral ? 0 : 1);
   const upset = sl.upsetFactor ?? 1;
   // game-day form: each team has a small random form swing (any-given-Sunday)
-  const form = [gauss(0, 3.0 * upset) + homeAdv / 2, gauss(0, 3.0 * upset) - homeAdv / 2];
+  const sf = (tid) => (G.L.teams[tid]?.sf || 0);
+  const form = [gauss(0, 3.2 * upset) + homeAdv / 2 + sf(game.h), gauss(0, 3.2 * upset) - homeAdv / 2 + sf(game.a)];
   const scoringAdj = (sl.scoring ?? 1);
 
   const coin = chance(0.5) ? 0 : 1; // team that receives first

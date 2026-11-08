@@ -139,7 +139,7 @@ for y in range(SEASON - 2, SEASON + 1):
     snaps[y] = g
 games_in_season = {y: 17 for y in range(SEASON - 4, SEASON)}
 games_in_season[SEASON] = max(1, last_week - 1 if last_week > 1 else 1)
-YW = {SEASON: 0.42, SEASON - 1: 0.38, SEASON - 2: 0.20}
+YW = {SEASON: 0.55, SEASON - 1: 0.30, SEASON - 2: 0.15}
 
 
 def sget(df, idx, col, default=0.0):
@@ -292,7 +292,7 @@ PROD_W = {
     "TE": {"ypg": .35, "ypt": .15, "share": .2, "epa": .15, "drop": .05, "td": .1},
     "EDGE": {"prss": .4, "sk": .25, "tfl": .12, "qbh": .08, "tkl": .1, "ff": .05},
     "DT": {"prss": .3, "sk": .15, "tfl": .2, "tkl": .25, "qbh": .1},
-    "LB": {"tkl": .3, "tfl": .12, "prss": .08, "rat": .2, "mtkl": .15, "pd": .1, "int": .05},
+    "LB": {"tkl": .14, "tfl": .14, "prss": .1, "rat": .26, "ypt": .1, "mtkl": .16, "pd": .06, "int": .04},
     "CB": {"rat": .32, "ypt": .2, "pd": .18, "int": .14, "mtkl": .06, "tkl": .1},
     "S": {"rat": .22, "ypt": .12, "tkl": .2, "int": .16, "pd": .14, "mtkl": .16},
     "K": {"fgoe": .7, "long": .2, "pat": .1},
@@ -399,6 +399,9 @@ for p in players:
     w = PROD_W.get(pos)
     tot, tw, samp = 0.0, 0.0, 0.0
     hints = defaultdict(lambda: [0.0, 0.0])
+    # adaptive recency: a real current-season sample dominates (players change year to year)
+    cur = p["m"].get(SEASON, (None, 0))[1]
+    yw = {SEASON: 0.55 + 0.2 * min(1.0, cur), SEASON - 1: 0.30 - 0.12 * min(1.0, cur), SEASON - 2: 0.15 - 0.08 * min(1.0, cur)}
     if w:
         for y, (m, smp) in p["m"].items():
             score, sw = 0.0, 0.0
@@ -410,10 +413,10 @@ for p in players:
             for k in m:
                 zz = z(pos, k, m.get(k))
                 if zz is not None:
-                    hints[k][0] += zz * YW[y] * smp
-                    hints[k][1] += YW[y] * smp
+                    hints[k][0] += zz * yw[y] * smp
+                    hints[k][1] += yw[y] * smp
             if sw > 0:
-                ww = YW[y] * smp
+                ww = yw[y] * smp
                 tot += ww * score / sw
                 tw += ww
                 samp += ww
@@ -453,14 +456,14 @@ for comp in ("usage", "mkt"):
         mu, sd = np.mean(vals), np.std(vals) + 1e-9
         for p in players:
             if p["pos"] == pos and p[comp] is not None:
-                p[comp + "_z"] = float(np.clip((p[comp] - mu) / sd, -3, 3))
+                p[comp + "_z"] = float(np.clip((p[comp] - mu) / sd, -3, 1.2 if comp == "usage" else 2.0))
 
 WEIGHTS = {  # production, usage, market, reputation (Pro Bowls / All-Pros)
-    "QB": (.58, .17, .15, .10), "RB": (.50, .25, .15, .10), "FB": (.25, .45, .15, .15),
-    "WR": (.50, .22, .16, .12), "TE": (.45, .27, .16, .12),
-    "OT": (0, .30, .40, .30), "OG": (0, .30, .40, .30), "C": (0, .30, .40, .30),
-    "EDGE": (.48, .20, .20, .12), "DT": (.42, .25, .20, .13), "LB": (.40, .27, .20, .13),
-    "CB": (.40, .27, .20, .13), "S": (.40, .27, .20, .13), "K": (.75, .05, .15, .05), "P": (.75, .05, .15, .05),
+    "QB": (.52, .14, .16, .18), "RB": (.62, .18, .10, .10), "FB": (.25, .45, .15, .15),
+    "WR": (.62, .16, .12, .10), "TE": (.56, .21, .13, .10),
+    "OT": (0, .35, .40, .25), "OG": (0, .35, .40, .25), "C": (0, .35, .40, .25),
+    "EDGE": (.56, .17, .15, .12), "DT": (.52, .21, .15, .12), "LB": (.52, .21, .15, .12),
+    "CB": (.52, .21, .15, .12), "S": (.52, .21, .15, .12), "K": (.75, .05, .15, .05), "P": (.75, .05, .15, .05),
     "LS": (0, .5, .3, .2),
 }
 for p in players:
@@ -472,7 +475,7 @@ for pos in set(p["pos"] for p in players):
     mu, sd = np.mean(vals), np.std(vals) + 1e-9
     for p in players:
         if p["pos"] == pos:
-            p["rep_z"] = float(np.clip((p["rep"] - mu) / sd, -1, 3.5))
+            p["rep_z"] = float(np.clip((p["rep"] - mu) / sd, -1, 1.8))
 for p in players:
     wp, wu, wm, wr = WEIGHTS.get(p["pos"], (.3, .3, .2, .2))
     parts = []
@@ -507,10 +510,11 @@ def draft_prior(p):
             return y0 + (y1 - y0) * (pk - x0) / (x1 - x0)
     return 58.0
 
-STARTERS = {"QB": 1, "RB": 1.2, "FB": .35, "WR": 3, "TE": 1.4, "OT": 2, "OG": 2, "C": 1, "EDGE": 2, "DT": 2,
-            "LB": 2.2, "CB": 2.6, "S": 2, "K": 1, "P": 1, "LS": 1}
-CURVE = [(0, 99), (0.03, 95), (0.08, 91), (0.2, 86), (0.4, 81), (0.7, 76), (1.0, 72), (1.5, 66), (2.2, 60),
-         (3.2, 53), (5.0, 46), (9.0, 40)]
+# "starters" = how many players per team at the position get real snaps (rotations count)
+STARTERS = {"QB": 1, "RB": 1.8, "FB": .35, "WR": 3.4, "TE": 1.7, "OT": 2, "OG": 2, "C": 1, "EDGE": 2.7, "DT": 2.5,
+            "LB": 2.4, "CB": 3.0, "S": 2.2, "K": 1, "P": 1, "LS": 1}
+CURVE = [(0, 99), (0.03, 95), (0.08, 91), (0.2, 86), (0.4, 81), (0.7, 77), (1.0, 73), (1.5, 68), (2.2, 63),
+         (3.2, 57), (5.0, 50), (9.0, 43)]
 
 
 def curve(x):
@@ -534,6 +538,81 @@ for pos in STARTERS:
         p["ovr0"] = o
         p["ovr"] = int(round(o))
 
+# ---------------------------------------------------------------- expert evaluation input
+# Public stats can't grade offensive linemen (and only partly grade other spots), so EA's current
+# in-season ratings are blended in as ONE input, weighted by how little real data exists per position.
+import re as _re, unicodedata as _ud
+EXPERT_W = {"OT": .85, "OG": .85, "C": .85, "LS": .85, "FB": .8, "LB": .72, "S": .72, "DT": .72, "EDGE": .7, "CB": .72,
+            "TE": .68, "RB": .62, "WR": .64, "QB": .66, "K": .72, "P": .75}
+def _norm(n):
+    n = _ud.normalize("NFKD", str(n)).encode("ascii", "ignore").decode().lower()
+    n = _re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", n)
+    return _re.sub(r"[^a-z]", "", n)
+EA_TEAM = {t["region"] + " " + t["name"]: t["abbr"] for t in TEAMS}
+ea_path = os.path.join(os.path.dirname(OUT) or ".", "ea_ratings.json")
+EA = {}
+if os.path.exists(ea_path):
+    ea = json.load(open(ea_path))
+    EA_POS = {"HB": "RB", "LEDG": "EDGE", "REDG": "EDGE", "FS": "S", "SS": "S", "MIKE": "LB", "WILL": "LB", "SAM": "LB",
+              "LT": "OT", "RT": "OT", "LG": "OG", "RG": "OG"}
+    NEAR = {frozenset(x) for x in [("EDGE", "DT"), ("EDGE", "LB"), ("S", "CB"), ("S", "LB"), ("OG", "C"), ("OT", "OG"),
+                                   ("TE", "FB"), ("RB", "FB"), ("K", "P")]}
+    def _ok(a, b): return a == b or frozenset((a, b)) in NEAR
+    by_name_team, by_name_bd, by_name = {}, {}, {}
+    for e in ea["players"]:
+        nm = _norm(e["fn"] + e["ln"])
+        ps = EA_POS.get(e.get("pos"), e.get("pos"))
+        tm = EA_TEAM.get(e["team"].replace("NY ", "New York "), None)
+        by_name_team.setdefault((nm, tm), []).append((ps, e["ovr"]))
+        if e.get("bd"): by_name_bd.setdefault((nm, e["bd"]), []).append((ps, e["ovr"]))
+        by_name.setdefault(nm, []).append((ps, e["ovr"]))
+    def _pick(lst, pos):
+        lst = [v for ps, v in (lst or []) if _ok(ps, pos)]
+        return lst[0] if len(lst) == 1 else None
+    matched = 0
+    for p in players:
+        r = p["row"]
+        nm = _norm(str(r.first_name) + str(r.last_name))
+        nm2 = _norm(str(r.football_name) + str(r.last_name)) if isinstance(r.football_name, str) else nm
+        pos = p["pos"]
+        v = _pick(by_name_team.get((nm2, r.team)), pos) or _pick(by_name_team.get((nm, r.team)), pos)
+        if v is None and isinstance(r.birth_date, str): v = _pick(by_name_bd.get((nm2, r.birth_date)), pos) or _pick(by_name_bd.get((nm, r.birth_date)), pos)
+        if v is None: v = _pick(by_name.get(nm2), pos) or _pick(by_name.get(nm), pos)
+        if v is not None:
+            EA[p["gid"]] = v; matched += 1
+    print("expert input matched", matched, "of", len(players))
+    for pos in STARTERS:
+        grp = [p for p in players if p["pos"] == pos]
+        for p in grp:
+            if p["gid"] in EA:
+                w = EXPERT_W.get(pos, .4)
+                # trust our model more where the player has a big real 2026 sample
+                if p.get("psamp", 0) and pos not in ("OT", "OG", "C", "LS"): w *= 0.9
+                p["blend"] = (1 - w) * p["ovr0"] + w * EA[p["gid"]]
+            else:
+                p["blend"] = p["ovr0"]
+        # keep the league-wide distribution realistic: half rank-curve, half blended value
+        grp.sort(key=lambda p: -p["blend"])
+        n_start = 32 * STARTERS[pos]
+        for i, p in enumerate(grp):
+            v = 0.8 * p["blend"] + 0.2 * curve((i + 0.5) / n_start)
+            # specialists: the best kicker in the league is not a 99, and long snappers live in a narrow band
+            if pos in ("K", "P"): v = 74 + (v - 74) * 0.72
+            if pos == "LS": v = 62 + (v - 62) * 0.65
+            p["ovr"] = int(round(v))
+
+if os.environ.get("DUMP"):
+    import csv as _csv
+    with open(os.environ["DUMP"], "w", newline="") as fh:
+        w_ = _csv.writer(fh); w_.writerow(["pos", "name", "team", "age", "exp", "st", "score", "prod", "psamp", "usage_z", "mkt_z", "rep_z", "ovr0", "ea", "final"])
+        for p in players:
+            r = p["row"]
+            w_.writerow([p["pos"], f"{r.first_name} {r.last_name}", r.team, "", r.years_exp, r.gstatus, round(p["score"], 2), p["prod"] if p["prod"] is None else round(p["prod"], 2), round(p.get("psamp", 0), 2), p.get("usage_z") and round(p["usage_z"], 2), p.get("mkt_z") and round(p["mkt_z"], 2), round(p["rep_z"], 2), round(p["ovr0"], 1), EA.get(p["gid"]), p["ovr"]])
+if os.environ.get("DEBUG_NAMES"):
+    for p in players:
+        nm = f"{p['row'].first_name} {p['row'].last_name}"
+        if nm in os.environ["DEBUG_NAMES"].split(","):
+            print("DBG", nm, p["pos"], "prod", p["prod"] and round(p["prod"], 2), "samp", round(p["psamp"], 2), "usage_z", p.get("usage_z") and round(p["usage_z"], 2), "mkt_z", p.get("mkt_z") and round(p["mkt_z"], 2), "rep_z", round(p["rep_z"], 2), "score", round(p["score"], 2), "ovr0", round(p["ovr0"], 1), "ea", EA.get(p["gid"]), "final", p["ovr"], {y: {k: round(v, 2) for k, v in m.items() if v == v} for y, (m, _) in p["m"].items()})
 # ---------------------------------------------------------------- injuries (latest report)
 inj = D["injuries"]
 inj = inj[inj.week == inj.week.max()] if len(inj) else inj
@@ -686,10 +765,11 @@ for _, x in allg.iterrows():
         elif not post:
             r["t"] += 1
         r["seasons"].add(int(x.season))
+NAME_FIX = {"Klint Kubliak": "Klint Kubiak"}  # typo in source data
 COACHES = {}
 for tm, c in HC.items():
     r = coach_rec.get(c, {"w": 0, "l": 0, "t": 0, "pw": 0, "pl": 0, "sb": 0, "seasons": set()})
-    COACHES[tm] = {"name": c, "w": r["w"], "l": r["l"], "t": r["t"], "pw": r["pw"], "pl": r["pl"], "sb": r["sb"], "yrs": len(r["seasons"])}
+    COACHES[tm] = {"name": NAME_FIX.get(c, c), "w": r["w"], "l": r["l"], "t": r["t"], "pw": r["pw"], "pl": r["pl"], "sb": r["sb"], "yrs": len(r["seasons"])}
 
 out = {
     "meta": {"season": SEASON, "built": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),

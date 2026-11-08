@@ -126,19 +126,27 @@ ACTIONS.draftSimNext = async () => act('draftSim', { all: false }, { busyText: '
 ACTIONS.draftSimAll = async () => { if (confirm('Let your scouts make all of your remaining picks?')) await act('draftSim', { all: true }, { busyText: 'Simulating the draft…' }); };
 
 // ===================================================================== FANTASY DRAFT
-let fdPos = 'ALL';
+let fdPos = 'ALL', fdQ = '';
+const FD_TABS = ['ALL', 'QB', 'RB', 'WR', 'TE', 'OT', 'OG', 'C', 'EDGE', 'DT', 'LB', 'CB', 'S', 'K', 'P', 'LS', 'FB'];
+const FD_NEED = { QB: 3, RB: 4, WR: 6, TE: 3, OT: 4, OG: 4, C: 2, EDGE: 5, DT: 4, LB: 4, CB: 6, S: 4, K: 1, P: 1, LS: 1, FB: 1 };
 PAGES2.fantasy = async () => {
-  const f = await call('fantasyState', { pos: fdPos });
+  const f = await call('fantasyState', { pos: fdPos, q: fdQ });
   if (!f.F) return '<div class="card">No fantasy draft in this league.</div>';
   if (f.F.done) return `<div class="card"><h2>Fantasy draft complete</h2><a class="btn pri" href="#/roster">See your roster</a></div>`;
   const teamCounts = {};
   for (const p of f.mine) teamCounts[p.pos] = (teamCounts[p.pos] || 0) + 1;
-  return `<div class="page-h"><h1>Fantasy Draft</h1><span class="sub">Round ${f.F.round} of ${f.F.rounds} · Pick ${f.F.idx + 1}</span><div class="right">${f.mineOnClock ? '<span class="badge grn">You are on the clock</span><button class="btn" data-act="fdAuto">Auto-pick</button>' : ''}${net.mode !== 'guest' ? '<button class="btn pri" data-act="fdSim">Sim to my pick</button><button class="btn" data-act="fdSimAll">Auto-draft the rest</button>' : ''}${posSel(fdPos, 'fdPos')}</div></div>
+  return `<div class="page-h"><h1>Fantasy Draft</h1><span class="sub">Round ${f.F.round} of ${f.F.rounds} · Pick ${f.F.idx + 1}</span><div class="right">${f.mineOnClock ? '<span class="badge grn">You are on the clock</span><button class="btn" data-act="fdAuto">Auto-pick</button>' : ''}${net.mode !== 'guest' ? '<button class="btn pri" data-act="fdSim">Sim to my pick</button><button class="btn" data-act="fdSimAll">Auto-draft the rest</button>' : ''}</div></div>
+  <div class="card" style="padding:10px 12px"><div class="row" style="flex-wrap:wrap;gap:6px">${FD_TABS.map((p) => { const have = teamCounts[p] || 0; const need = FD_NEED[p]; return `<button class="btn sm ${fdPos === p ? 'pri' : ''}" data-act="fdTab" data-p="${p}" title="${p === 'ALL' ? 'Show every available player' : `Show only ${p}s. You have ${have}, a typical roster carries about ${need}.`}">${p}${p !== 'ALL' ? ` <span class="${have >= need ? 'good' : have ? 'warn' : 'dim'}" style="font-size:11px">${have}/${need}</span>` : ''}</button>`; }).join('')}
+    <input id="fdSearch" placeholder="Search name…" value="${esc(fdQ)}" style="margin-left:auto;min-width:180px" title="Type a player's name and press Enter"></div>
+    <div class="tiny muted" style="margin-top:6px">${f.pool.length}${f.pool.length >= 300 ? '+' : ''} available${fdPos !== 'ALL' ? ` at ${fdPos}` : ''}${fdQ ? ` matching "${esc(fdQ)}"` : ''}. The numbers show how many you have vs. how many a team usually carries.</div></div>
   <div class="grid g21"><div>${table({ id: 'fd', sort: { k: 'ovr', dir: 'desc' }, rows: f.pool, cols: [{ k: 'name', l: 'Player', f: (p) => pname(p, { sub: p.pos }) }, { k: 'pos', l: 'Pos' }, { k: 'age', l: 'Age', num: true }, { k: 'ovr', l: 'OVR', num: true, f: (p) => ovr(p.ovr) }, { k: 'pot', l: 'Pot' }, { k: 'c', l: 'Contract', f: (p) => contractTxt(p.contract), sortv: (p) => p.contract?.apy || 0 }, { k: 'x', l: '', nosort: true, f: (p) => (f.mineOnClock ? `<button class="btn sm pri" data-act="fdPick" data-pid="${esc(p.pid)}">Draft</button>` : '') }] })}</div>
   <div><div class="card"><h2>My roster (${f.mine.length}/53)</h2><div class="chips" style="margin-bottom:8px">${POS.filter((p) => p !== 'FB' && p !== 'LS').map((p) => `<span class="pill">${p} ${teamCounts[p] || 0}</span>`).join('')}</div>${f.mine.slice().sort((a, b) => b.ovr - a.ovr).map((p) => `<div class="row small" style="justify-content:space-between;padding:2px 0">${esc(p.pos)} ${esc(p.name)} ${ovr(p.ovr)}</div>`).join('')}</div>
   <div class="card"><h2>Recent picks</h2>${f.log.slice(0, 30).map((l) => `<div class="small">R${l.r} ${esc(l.abbr)}: ${esc(l.name)} (${l.pos} ${l.ovr})</div>`).join('')}</div></div></div>`;
 };
 ACTIONS.fdPos = (el) => { fdPos = el.value; rerender(); };
+ACTIONS.fdTab = (el) => { fdPos = el.dataset.p; rerender(); };
+document.addEventListener('keydown', (e) => { if (e.target?.id === 'fdSearch' && e.key === 'Enter') { fdQ = e.target.value; rerender(); } });
+document.addEventListener('input', (e) => { if (e.target?.id === 'fdSearch' && !e.target.value && fdQ) { fdQ = ''; rerender(); } });
 ACTIONS.fdPick = async (el) => { const r = await act('fantasyMakePick', { pid: el.dataset.pid }, { refresh: false }); if (!r.error) await act('fantasySim', { all: false }, { busyText: 'Other GMs are picking…' }); };
 ACTIONS.fdAuto = async () => { const r = await act('fantasyAutoMine', {}, { refresh: false }); if (!r.error) await act('fantasySim', { all: false }, { busyText: 'Other GMs are picking…' }); };
 ACTIONS.fdSim = async () => act('fantasySim', { all: false }, { busyText: 'Drafting…' });

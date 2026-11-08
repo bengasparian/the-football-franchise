@@ -14,7 +14,9 @@ import { startFantasyDraft } from './fantasy.js';
 const REAL_KEYS = { pntyd: 'pntYd' };
 
 export function createLeague(data, opts) {
-  const { start = 'current', userTeams = [], name = 'My Franchise', fantasy = false, seed = Date.now(), sliders = {}, online = false } = opts;
+  const { userTeams = [], name = 'My Franchise', fantasy = false, seed = Date.now(), sliders = {}, online = false } = opts;
+  // a fantasy draft always leads into the preseason: real results and stats would make no sense on redrafted rosters
+  const start = fantasy ? 'preseason' : (opts.start || 'current');
   seedRng(seed);
   const S0 = data.meta.season;
   const L = {
@@ -53,7 +55,22 @@ export function createLeague(data, opts) {
   }
 
   // ---- coaches & finances & picks
-  initCoaches(data.coaches);
+  // unit performance this season (points per game, ranked) for coordinator ratings
+  const unit = {};
+  {
+    const acc = {};
+    for (const g of data.games) if (g.hs != null) {
+      (acc[g.h] ||= { pf: 0, pa: 0, n: 0 }); (acc[g.a] ||= { pf: 0, pa: 0, n: 0 });
+      acc[g.h].pf += g.hs; acc[g.h].pa += g.as; acc[g.h].n++; acc[g.a].pf += g.as; acc[g.a].pa += g.hs; acc[g.a].n++;
+    }
+    const ab = Object.keys(acc);
+    if (ab.length >= 30) {
+      const offR = [...ab].sort((x, y) => acc[y].pf / acc[y].n - acc[x].pf / acc[x].n);
+      const defR = [...ab].sort((x, y) => acc[x].pa / acc[x].n - acc[y].pa / acc[y].n);
+      for (const a of ab) unit[a] = { off: 92 - (offR.indexOf(a) / 31) * 30, def: 92 - (defR.indexOf(a) / 31) * 30 };
+    }
+  }
+  initCoaches(data.coaches, unit);
   for (const t of L.teams) initFinances(t);
   for (const s of [S0 + 1, S0 + 2, S0 + 3]) addSeasonPicks(s);
 
@@ -201,6 +218,10 @@ export function setExpectations() {
   const strengths = L.teams.map((t) => ({ t, v: rosterStrength(t.tid) }));
   strengths.sort((a, b) => b.v - a.v);
   strengths.forEach((x, i) => { x.t.expectWins = Math.round((12.6 - i * 0.29) * 2) / 2; x.t.powerRank = i + 1; });
+  // hidden season-long variance the projections can't see: scheme fit, locker room, health luck, a QB
+  // taking a leap or regressing. This is why some projected contenders flop and some sleepers break out.
+  const up = L.settings?.sliders?.upsetFactor ?? 1;
+  for (const t of L.teams) t.sf = clamp(gauss(0, 2.1 * up), -5 * up, 5 * up);
 }
 export function rosterStrength(tid) {
   const L = G.L;

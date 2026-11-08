@@ -12,9 +12,19 @@ async def main():
         await pg.screenshot(path='/tmp/s_start.png')
         await pg.click('[data-act=pickTeam][data-abbr=BUF]')
         await pg.click('[data-act=createLeague]')
-        await pg.wait_for_selector('.hero-team', timeout=60000)
-        await pg.wait_for_timeout(800)
+        await pg.wait_for_selector('.hub', timeout=60000)
+        await pg.wait_for_timeout(1200)
+        # tutorial: walk through every step
+        await pg.wait_for_selector('#tour .tour-box', timeout=5000)
+        n = 0
+        await pg.screenshot(path='/tmp/s_tour0.png')
+        while await pg.query_selector('#tourNext') and n < 20:
+            if n == 1: await pg.screenshot(path='/tmp/s_tour1.png')
+            await pg.click('#tourNext'); await pg.wait_for_timeout(150); n += 1
+        if n != 10: errors.append(f'tour steps {n}')
+        if await pg.query_selector('#tour'): errors.append('tour still open')
         await pg.screenshot(path='/tmp/s_home.png', full_page=False)
+        await pg.click('#helpBtn'); await pg.wait_for_timeout(400); await pg.screenshot(path='/tmp/s_help.png'); await pg.keyboard.press('Escape')
         routes = ['roster','depth','schedule','standings','stats','teams','news','history','cap','staff','owner','trade','finder','offers','fa','draft','rules','settings','online']
         for r in routes:
             await pg.goto(URL + '#/' + r); await pg.wait_for_timeout(700)

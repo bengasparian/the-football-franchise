@@ -278,12 +278,18 @@ export function updateInSeasonRatings() {
     const startOvrs = grp.map((x) => x.p.r.ovrStart ?? x.p.r.ovr).sort((a, b) => b - a);
     grp.sort((a, b) => b.adj - a.adj);
     grp.forEach((x, i) => {
+      if (x.g < 3) return; // no reaction to a game or two
       const perfOvr = startOvrs[i];
       const base = x.p.r.ovrStart ?? x.p.r.ovr;
-      const w = Math.min(0.55, x.g / (x.g + 9)) * swing;
-      const target = clamp(base + w * (perfOvr - base), base - 10, base + 10);
-      const newOvr = clamp(Math.round(target), 25, 99);
-      if (newOvr !== x.p.r.ovr) setOvr(x.p, newOvr);
+      // season-long trend, weighted by sample size (a full season moves a rating at most ~45% toward production)
+      const w = Math.min(0.45, x.g / (x.g + 12)) * swing;
+      const target = clamp(base + w * (perfOvr - base), base - 9, base + 9);
+      const cur = x.p.r.ovr;
+      const gap = target - cur;
+      // hysteresis: only move when the trend clearly disagrees, and only a point or two at a time
+      if (Math.abs(gap) < 3) return; // a sustained trend, not one game
+      const step = Math.abs(gap) >= 6 ? 2 : 1;
+      setOvr(x.p, clamp(cur + Math.sign(gap) * step, 25, 99));
     });
   }
 }

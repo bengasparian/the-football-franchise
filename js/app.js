@@ -1,8 +1,10 @@
 // App shell: router, header with sim controls, sidebar, start screen, settings, online.
 import { call, session, net, host, join, claim, onNet, sendChat, setReady, guestStatus, leaveOnline, setToastHandler, clearReady } from './client.js';
 import { esc, $, $$, money, modal, closeModal, toast, busy, logo, setAccent, TABLES } from './ui.js';
+void $$;
 import { PAGES, ACTIONS as PA } from './pages.js';
 import { PAGES2, ACTIONS as PA2 } from './pages2.js';
+import { HELP, startTour } from './help.js';
 
 export const APP = { header: null, route: '', params: [], teams: null };
 const ACTIONS = { ...PA, ...PA2 };
@@ -15,7 +17,7 @@ async function boot() {
   document.body.innerHTML = `
   <div id="app" class="nolg">
     <header id="top"></header>
-    <nav id="side"></nav>
+    <nav id="nav"></nav>
     <main id="main"><div class="empty"><div class="spinner" style="margin:40px auto"></div>Loading…</div></main>
   </div>
   <div id="modal"></div><div id="toasts"></div>
@@ -57,6 +59,7 @@ export async function render() {
   APP.route = route || ''; APP.params = params;
   const h = await refreshHeader();
   const app = $('#app');
+  if (APP.route === 'tutorial') { location.hash = '#/home'; setTimeout(startTour, 400); return; }
   if (!h && !['start', 'online', 'join'].includes(APP.route)) { app.classList.add('nolg'); return renderStart(); }
   if (APP.route === 'start') { app.classList.add('nolg'); return renderStart(); }
   if (APP.route === 'online' || APP.route === 'join') { if (!h) app.classList.add('nolg'); return renderOnline(); }
@@ -72,8 +75,7 @@ export async function render() {
     console.error(e);
     main.innerHTML = `<div class="card"><h2>Something went wrong</h2><p class="bad">${esc(e.message)}</p><p class="muted">Try another page or reload. Your league autosaves.</p></div>`;
   }
-  $$('#side a').forEach((a) => a.classList.toggle('on', a.getAttribute('href') === `#/${APP.route || 'home'}`));
-  $('#side').classList.remove('open');
+  drawNav();
 }
 export async function rerender() { const main = $('#main'); main.dataset.keep = APP.route; main.dataset.st = main.scrollTop; await render(); main.dataset.keep = ''; }
 
@@ -82,53 +84,67 @@ function simButtons(h) {
   const ph = h.phase;
   const host = net.mode !== 'guest';
   if (!host) return `<button class="btn" data-act="toggleReady">${net.myReady ? '✓ Ready' : 'Mark ready'}</button>`;
-  const B = (label, target, cls = '') => `<button class="btn ${cls}" data-act="sim" data-target="${target}">${label}</button>`;
-  const more = (items) => `<select class="btn" data-change="simSelect" style="padding-right:24px"><option value="">More sims…</option>${items.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>`;
+  const TIPS = { week: 'Play the next set of games', phase: 'Move to the next phase of the NFL calendar', draftnext: 'Let AI teams pick until you are on the clock' };
+  const B = (label, target, cls = '') => `<button class="btn ${cls}" ${cls.includes('pri') ? 'id="advanceBtn"' : ''} data-act="sim" data-target="${target}" title="${TIPS[target] || 'Simulate ahead'}">${label}</button>`;
+  const more = (items) => `<select class="btn" data-change="simSelect" title="Simulate further ahead" style="padding-right:24px"><option value="">Sim ahead…</option>${items.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>`;
   switch (ph) {
     case 'REGULAR_SEASON': return `${B(`▶ Play Week ${h.week}`, 'week', 'pri')}${more([['midseason', 'Sim to midseason (Week 9)'], ['deadline', `Sim to trade deadline (after Wk ${h.deadline})`], ['playoffs', 'Sim to playoffs'], ['seasonEnd', 'Sim to end of season'], ['nextSeason', 'Sim to next season']])}`;
     case 'PRESEASON': return `${B(`▶ Preseason Week ${Math.max(1, h.week)}`, 'week', 'pri')}${more([['playoffs', 'Sim to playoffs'], ['nextSeason', 'Sim to next season']])}`;
     case 'PLAYOFFS': return `${B('▶ Play Next Round', 'week', 'pri')}${more([['seasonEnd', 'Sim through Super Bowl']])}`;
     case 'SEASON_END': return `${B('Advance to Re-Signing ▶', 'phase', 'pri')}${more([['draft', 'Sim to the Draft'], ['nextSeason', 'Sim to next season']])}`;
     case 'RESIGN': return `${B('Start Free Agency ▶', 'phase', 'pri')}`;
-    case 'FREE_AGENCY': return `<button class="btn" data-act="faDay">Next FA Day (${h.faDay ?? 0})</button>${B('To League Meeting ▶', 'phase', 'pri')}`;
+    case 'FREE_AGENCY': return `<button class="btn" data-act="faDay" title="Advance one day of free agency so players make decisions">Next FA Day</button>${B('To League Meeting ▶', 'phase', 'pri')}`;
     case 'LEAGUE_MEETING': return `${B('Hold Votes & Start Draft ▶', 'phase', 'pri')}`;
-    case 'DRAFT': return h.draftOnClock ? `<a class="btn pri" href="#/draft">You're on the clock!</a>` : `${B('Sim to My Pick', 'draftnext', 'pri')}${B('Finish Draft', 'phase')}`;
+    case 'DRAFT': return h.draftOnClock ? `<a class="btn pri" id="advanceBtn" href="#/draft">You're on the clock!</a>` : `${B('Sim to My Pick', 'draftnext', 'pri')}${B('Finish Draft', 'phase')}`;
     case 'POST_DRAFT': return `${B('Open Training Camp ▶', 'phase', 'pri')}`;
     case 'TRAINING_CAMP': return `${B('Start Preseason ▶', 'phase', 'pri')}${more([['nextSeason', 'Skip to Week 1']])}`;
-    case 'FANTASY_DRAFT': return `<a class="btn pri" href="#/fantasy">Fantasy Draft Room</a>`;
+    case 'FANTASY_DRAFT': return `<a class="btn pri" id="advanceBtn" href="#/fantasy">Fantasy Draft Room</a>`;
     default: return '';
   }
 }
 function drawTop() {
   const h = APP.header;
   const top = $('#top');
-  if (!h) { top.innerHTML = `<div class="brand"><span class="the">THE</span><span>Football <b>Franchise</b></span></div><div class="spacer"></div>${net.mode === 'guest' ? `<span class="badge blu">Online · Room ${esc(net.code)}</span>` : ''}`; return; }
+  if (!h) { top.innerHTML = `<div class="brand"><span class="the">THE</span><span>Football <b>Franchise</b></span></div><div class="spacer"></div>${net.mode === 'guest' ? `<span class="badge blu">Online · Room ${esc(net.code)}</span>` : ''}`; drawNav(); return; }
   const multi = h.userTids.length > 1 && net.mode !== 'guest';
+  const stage = h.phase === 'REGULAR_SEASON' ? `WEEK ${h.week}` : h.phase === 'PRESEASON' ? `PRESEASON WK ${Math.max(1, h.week)}` : h.phase === 'FREE_AGENCY' ? `FA DAY ${h.faDay ?? 0}` : esc(h.phaseLabel).toUpperCase();
   top.innerHTML = `
-    <button class="btn ghost" id="menuBtn" data-act="menu">☰</button>
-    <a class="brand" href="#/" style="color:inherit;text-decoration:none"><span class="the">THE</span><span class="full">Football <b>Franchise</b></span></a>
-    <div class="ctx">${logo(h.team.logo)}<div><div class="t">${multi ? `<select data-change="switchTeam" class="btn sm" style="font-family:var(--cond);font-size:15px">${h.userTids.map((t) => `<option value="${t}" ${t === session.tid ? 'selected' : ''}>${esc(APP.teams?.[t]?.abbr || t)}</option>`).join('')}</select>` : esc(h.team.region + ' ' + h.team.name)} <span class="muted">${esc(h.rec)}</span></div>
-    <div class="s">${h.season} · ${esc(h.phaseLabel)}${h.phase === 'REGULAR_SEASON' ? ` · Week ${h.week}` : ''} · Cap space <b class="${h.capSpace < 0 ? 'bad' : ''}">${money(h.capSpace)}</b></div></div></div>
+    <a class="brand" href="#/home" title="Franchise Hub"><span class="the">THE</span><span class="full">Football <b>Franchise</b></span></a>
+    <div class="teamid">${logo(h.team.logo, 'md')}<div><div class="tn">${multi ? `<select data-change="switchTeam" class="teamsel" title="Switch which of your teams you are managing">${h.userTids.map((t) => `<option value="${t}" ${t === session.tid ? 'selected' : ''}>${esc(APP.teams?.[t] ? APP.teams[t].region + ' ' + APP.teams[t].name : t)}</option>`).join('')}</select>` : esc(h.team.region + ' ' + h.team.name)}</div><div class="rec">${esc(h.rec || '0-0')} · ${h.season}</div></div></div>
+    <div class="stage" title="Where you are in the NFL calendar"><span>${stage}</span><small>${esc(h.phaseLabel)}</small></div>
+    <div class="capchip" title="Cap space for the current league year">CAP SPACE <b class="${h.capSpace < 0 ? 'bad' : ''}">${money(h.capSpace)}</b></div>
     <div class="spacer"></div>
     ${net.mode !== 'local' ? `<a href="#/online" class="badge blu" title="Online room">● ${esc(net.code || '')} ${net.mode === 'host' ? `· ${net.conns.size} online` : ''}</a>` : ''}
+    <button class="btn ghost helpbtn" id="helpBtn" data-act="help" title="What is this screen?">?</button>
     <div class="simbar">${simButtons(h)}</div>`;
+  drawNav();
 }
-function drawSide() {
+const SECTIONS = [
+  { id: 'home', label: 'Hub', pages: [['home', 'Franchise Hub']] },
+  { id: 'team', label: 'My Team', pages: [['roster', 'Roster'], ['depth', 'Depth Chart'], ['schedule', 'Schedule'], ['cap', 'Salary Cap'], ['staff', 'Coaching Staff'], ['owner', 'Owner & Finances']] },
+  { id: 'moves', label: 'Transactions', pages: [['trade', 'Trade Center'], ['finder', 'Trade Finder'], ['offers', 'Trade Offers'], ['fa', 'Free Agency'], ['draft', 'Draft & Scouting'], ['fantasy', 'Fantasy Draft']] },
+  { id: 'league', label: 'League', pages: [['standings', 'Standings & Playoffs'], ['stats', 'Stats & Leaders'], ['teams', 'Teams'], ['news', 'News'], ['rules', 'League Meeting'], ['history', 'History & Awards']] },
+  { id: 'office', label: 'Office', pages: [['settings', 'Settings & Sliders'], ['online', 'Play Online'], ['start', 'Saves / New League'], ['tutorial', 'Tutorial']] },
+];
+function sectionOf(route) { for (const s of SECTIONS) if (s.pages.some(([r]) => r === route)) return s.id; if (['player', 'team', 'game'].includes(route)) return route === 'team' ? 'league' : 'team'; return 'home'; }
+function drawNav() {
   const h = APP.header;
-  if (!h) { $('#side').innerHTML = ''; return; }
-  const L = (href, ic, label, badge = '') => `<a href="#/${href}"><span class="ic">${ic}</span>${label}${badge}</a>`;
-  const b = (n, cls = 'red') => (n ? ` <span class="badge ${cls}">${n}</span>` : '');
-  $('#side').innerHTML = `
-    ${L('home', '🏠', 'Front Office', b(h.openEvents + h.openOffers, 'yel'))}
-    <div class="grp">Team</div>
-    ${L('roster', '👥', 'Roster')}${L('depth', '📋', 'Depth Chart')}${L('schedule', '📅', 'Schedule')}${L('cap', '💰', 'Salary Cap')}${L('staff', '🧢', 'Coaching Staff')}${L('owner', '🏟️', 'Owner & Finances')}
-    <div class="grp">Transactions</div>
-    ${L('trade', '🔁', 'Trade Center')}${L('finder', '🔎', 'Trade Finder')}${L('offers', '📨', 'Trade Offers', b(h.openOffers))}${L('fa', '✍️', 'Free Agency', h.phase === 'FREE_AGENCY' ? b(`Day ${h.faDay}`, 'grn') : '')}${L('draft', '🎓', 'Draft & Scouting', h.phase === 'DRAFT' ? b('LIVE', 'grn') : '')}${h.phase === 'FANTASY_DRAFT' ? L('fantasy', '🎲', 'Fantasy Draft', b('LIVE', 'grn')) : ''}
-    <div class="grp">League</div>
-    ${L('standings', '🏆', 'Standings & Playoffs')}${L('stats', '📊', 'Stats & Leaders')}${L('teams', '🏈', 'Teams')}${L('news', '📰', 'News & Transactions')}${L('rules', '⚖️', 'League Meeting', h.phase === 'LEAGUE_MEETING' ? b('VOTE', 'grn') : '')}${L('history', '📜', 'History & Awards')}
-    <div class="grp">Game</div>
-    ${L('online', '🌐', 'Play Online')}${L('settings', '⚙️', 'Settings & Sliders')}${L('start', '💾', 'Saves / New League')}`;
+  const nav = $('#nav');
+  if (!h) { nav.innerHTML = ''; return; }
+  const cur = sectionOf(APP.route || 'home');
+  const badge = (r) => {
+    if (r === 'offers' && h.openOffers) return ` <span class="badge red">${h.openOffers}</span>`;
+    if (r === 'home' && h.openEvents) return ` <span class="badge yel">${h.openEvents}</span>`;
+    if (r === 'fa' && h.phase === 'FREE_AGENCY') return ' <span class="badge grn">LIVE</span>';
+    if (r === 'draft' && h.phase === 'DRAFT') return ' <span class="badge grn">LIVE</span>';
+    if (r === 'rules' && h.phase === 'LEAGUE_MEETING') return ' <span class="badge grn">VOTE</span>';
+    return '';
+  };
+  const sec = SECTIONS.find((x) => x.id === cur);
+  nav.innerHTML = `<div class="sections">${SECTIONS.map((x) => `<a class="sec ${x.id === cur ? 'on' : ''}" data-sec="${x.id}" href="#/${x.pages[0][0]}">${x.label}${x.id === 'home' && (h.openEvents + h.openOffers) ? ` <span class="badge yel">${h.openEvents + h.openOffers}</span>` : ''}</a>`).join('')}</div>
+    ${sec.pages.length > 1 ? `<div class="subnav">${sec.pages.filter(([r]) => r !== 'fantasy' || h.phase === 'FANTASY_DRAFT').map(([r, l]) => `<a class="${APP.route === r ? 'on' : ''}" href="#/${r}">${l}${badge(r)}</a>`).join('')}</div>` : ''}`;
 }
+function drawSide() { drawNav(); }
 
 // ---------------------------------------------------------------- events
 async function onClick(e) {
@@ -168,7 +184,9 @@ export async function act(method, args, { msg = null, refresh = true, busyText =
 
 const CORE = {
   closeModal: () => closeModal(),
-  menu: () => $('#side').classList.toggle('open'),
+  menu: () => {},
+  help: () => { const k = APP.route || 'home'; const h = HELP[k] || HELP.home; modal(`${esc(h[0])}`, `<div style="line-height:1.6">${h[1]}</div><div class="row" style="margin-top:14px"><button class="btn" data-act="tourStart">Replay the guided tour</button></div>`, { narrow: true }); },
+  tourStart: () => { closeModal(); startTour(); },
   async sim(el) {
     const target = el.dataset.target;
     if (target === 'draftnext') { await act('draftSim', { all: false }, { busyText: 'On the clock…' }); return; }
@@ -186,13 +204,13 @@ const CORE = {
 // ---------------------------------------------------------------- start screen
 const START = { mode: 'current', teams: new Set(), fantasy: false, name: 'My Franchise' };
 async function renderStart() {
-  drawTop(); $('#side').innerHTML = '';
+  drawTop(); $('#nav').innerHTML = '';
   const [teams, saves, info] = await Promise.all([call('teamsForPicker'), call('listSaves'), call('init')]);
   APP.pickTeams = teams;
   const byDiv = {};
   for (const t of teams) (byDiv[`${t.conf} ${t.div}`] ||= []).push(t);
   const order = ['AFC East', 'AFC North', 'AFC South', 'AFC West', 'NFC East', 'NFC North', 'NFC South', 'NFC West'];
-  const mode = (id, title, desc) => `<div class="mode ${START.mode === id ? 'on' : ''}" data-act="startMode" data-mode="${id}"><h3>${title}</h3><div class="muted small">${desc}</div></div>`;
+  const mode = (id, title, desc) => { const off = START.fantasy && id !== 'preseason'; const on = START.fantasy ? id === 'preseason' : START.mode === id; return `<div class="mode ${on ? 'on' : ''}" ${off ? 'style="opacity:.4;pointer-events:none" title="Fantasy draft leagues always start in the preseason"' : `data-act="startMode" data-mode="${id}"`}><h3>${title}</h3><div class="muted small">${desc}</div></div>`; };
   $('#main').innerHTML = `<div class="start-wrap">
     <div class="hero"><h1><span class="the">THE</span>Football Franchise</h1>
       <p>Be the GM of any NFL team. Real rosters, real contracts and the real 2026 schedule. Ratings come from real production and change with how players actually perform in your league. Make trades, sign free agents, scout and draft, hire coaches, keep the owner happy, and build a dynasty, alone or with friends.</p>
@@ -206,7 +224,7 @@ async function renderStart() {
         ${mode('regular', '2026 Regular Season, Week 1', 'Current rosters with a fresh 0-0 start. Everyone healthy, the full 2026 schedule ahead.')}
         ${mode('preseason', '2026 Preseason', 'Start in August: preseason games, camp battles, and cutting down to 53. Then the full season.')}
       </div>
-      <label class="chk" style="margin-bottom:12px"><input type="checkbox" id="fantasy" ${START.fantasy ? 'checked' : ''} data-change="startFantasy"> <b>Fantasy draft</b> <span class="muted">— all 32 teams redraft every player in a 53-round snake draft (contracts stay with players)</span></label>
+      <label class="chk" style="margin-bottom:12px"><input type="checkbox" id="fantasy" ${START.fantasy ? 'checked' : ''} data-change="startFantasy"> <b>Fantasy draft</b> <span class="muted">— all 32 teams redraft every player in a 53-round snake draft (contracts stay with players). Fantasy leagues always start in the 2026 preseason.</span></label>
       <h3>Choose your team <span class="muted small" style="text-transform:none">(pick more than one for local multiplayer, or host online after creating)</span></h3>
       <div class="teamgrid">${order.map((d) => `<div class="div"><h4>${d}</h4>${(byDiv[d] || []).map((t) => `<div class="tpick ${START.teams.has(t.abbr) ? 'on' : ''}" data-act="pickTeam" data-abbr="${t.abbr}">${logo(t.logo, '')}<span>${esc(t.region)} <b>${esc(t.name)}</b></span></div>`).join('')}</div>`).join('')}</div>
       <div class="row" style="margin-top:16px"><button class="btn pri" data-act="createLeague" ${START.teams.size ? '' : 'disabled'}>Create League ▶</button><span class="muted small">${START.teams.size ? [...START.teams].join(', ') : 'Select at least one team'}</span>
@@ -216,18 +234,19 @@ async function renderStart() {
 const phaseNice = (p) => ({ REGULAR_SEASON: 'Season', PRESEASON: 'Preseason', PLAYOFFS: 'Playoffs', SEASON_END: 'Offseason', RESIGN: 'Re-sign', FREE_AGENCY: 'Free Agency', LEAGUE_MEETING: 'League Meeting', DRAFT: 'Draft', POST_DRAFT: 'UDFA', TRAINING_CAMP: 'Camp', FANTASY_DRAFT: 'Fantasy Draft' }[p] || p);
 Object.assign(CORE, {
   startMode(el) { START.mode = el.dataset.mode; START.name = $('#lgName')?.value || START.name; renderStart(); },
-  startFantasy(el) { START.fantasy = el.checked; },
+  startFantasy(el) { START.fantasy = el.checked; START.name = $('#lgName')?.value || START.name; renderStart(); },
   pickTeam(el) { START.name = $('#lgName')?.value || START.name; const a = el.dataset.abbr; START.teams.has(a) ? START.teams.delete(a) : START.teams.add(a); renderStart(); },
   async createLeague() {
     START.name = $('#lgName')?.value || START.name;
     busy(true, 'Building your league from real NFL data…');
     try {
-      const r = await call('newLeague', { start: START.mode, userTeams: [...START.teams], fantasy: START.fantasy, name: START.name, seed: Date.now() });
+      const r = await call('newLeague', { start: START.fantasy ? 'preseason' : START.mode, userTeams: [...START.teams], fantasy: START.fantasy, name: START.name, seed: Date.now() });
       localStorage.setItem('tff-last', r.saveId);
       session.tid = null; APP.teams = null;
       busy(false);
       location.hash = START.fantasy ? '#/fantasy' : '#/home';
-      await loadTeamsCache(); render();
+      await loadTeamsCache(); await render();
+      setTimeout(startTour, 500);
     } catch (e) { busy(false); toast(esc(e.message), 'error'); }
   },
   async loadSave(el) { busy(true, 'Loading…'); await call('load', { id: el.dataset.id }); localStorage.setItem('tff-last', el.dataset.id); session.tid = null; await loadTeamsCache(); busy(false); location.hash = '#/home'; render(); },

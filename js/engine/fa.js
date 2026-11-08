@@ -63,7 +63,14 @@ export function userOffer(tid, pid, offer) {
     Lg.fa.offers[pid] = (Lg.fa.offers[pid] || []).filter((x) => x.tid !== tid);
     Lg.fa.offers[pid].push({ tid, ...offer, day: Lg.fa.day, user: true });
     const ratio = offer.apy / ask.apy;
-    return { ok: true, pending: true, message: ratio >= 1 ? `${p.fn} ${p.ln} loved the offer and will decide soon.` : ratio >= 0.9 ? `${p.fn}'s agent says the offer is competitive.` : `${p.fn}'s agent says you'll need to improve the offer.` };
+    const posIdx = buildPosIdx();
+    const mine = offerScore(p, { tid, ...offer }, posIdx);
+    const rivals = Lg.fa.offers[pid].filter((x) => x.tid !== tid).map((x) => offerScore(p, x, posIdx));
+    const beatBy = rivals.filter((x) => x > mine).length;
+    const msg = beatBy ? `${p.fn}'s agent says ${beatBy} team${beatBy > 1 ? 's have' : ' has'} made a better offer so far. You can raise yours.`
+      : ratio >= 1 ? `${p.fn} ${p.ln} likes the offer${rivals.length ? ` and it leads the ${rivals.length + 1} offers he has` : ''}. He'll decide soon, but other teams can still outbid you.`
+        : ratio >= 0.9 ? `${p.fn}'s agent says the offer is competitive but below his asking price.` : `${p.fn}'s agent says you'll need to improve the offer.`;
+    return { ok: true, pending: true, leading: !beatBy, rivals: rivals.length, message: msg };
   }
   const sc = offerScore(p, { tid, ...offer });
   const need = 0.95 - Math.min(0.25, ((p.faWeeks || 0) * 0.03)) - (Lg.meta.phase === 'REGULAR_SEASON' ? 0.1 : 0);
@@ -86,8 +93,14 @@ export function faDay() {
   const posIdx = buildPosIdx();
   const capCache = {};
   const space0 = (tid) => (capCache[tid] ??= teamCap(tid, cs).space);
-  // AI bidding
-  for (const t of Lg.teams) {
+  // AI bidding. Teams go in a random order each day, and each player draws a realistic number of suitors
+  // (a star gets a handful of serious bidders, not the whole league).
+  const suitors = {};
+  for (const [pid, offs] of Object.entries(fa.offers)) suitors[pid] = offs.filter((o) => !o.user).length;
+  const maxSuitors = (p) => (['K', 'P', 'LS', 'FB'].includes(p.pos) ? 2 : p.r.ovr >= 86 ? 6 : p.r.ovr >= 80 ? 4 : 3);
+  const order = Lg.teams.slice();
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  for (const t of order) {
     if (Lg.meta.userTids.includes(t.tid)) continue;
     let space = space0(t.tid) - 18e6; // keep room for rookies & in-season moves
     const mode = teamMode(t.tid);
@@ -97,8 +110,11 @@ export function faDay() {
     for (const p of pool) {
       if (bids >= (fa.day <= 3 ? 3 : 2)) break;
       if ((fa.offers[p.pid] || []).some((o) => o.tid === t.tid)) continue;
+      if ((suitors[p.pid] || 0) >= maxSuitors(p)) continue;
       const role = roleOnTeam(p, t.tid, posIdx);
       if (role < 0.5 && p.r.ovr >= 68) continue;
+      // specialists: only chase one who is a clear upgrade on the current starter
+      if (['K', 'P', 'LS'].includes(p.pos) && Math.max(0, ...(posIdx[t.tid]?.[p.pos] || [])) > p.r.ovr - 5) continue;
       const a = age(p, cs);
       if (mode === 'rebuild' && a >= 30 && p.r.ovr < 85) continue;
       const mv = marketValue(p, cs);
@@ -110,6 +126,7 @@ export function faDay() {
       const yrs = clamp(idealYears(p) + Math.round(gauss(0, 0.7)), 1, 5);
       const gtd = Math.round(apy * yrs * clamp(idealGtdPct(p) + gauss(0, 0.06), 0, 0.8) / 10000) * 10000;
       (fa.offers[p.pid] ||= []).push({ tid: t.tid, apy, years: yrs, gtd, day: fa.day });
+      suitors[p.pid] = (suitors[p.pid] || 0) + 1;
       space -= apy;
       bids++;
     }
