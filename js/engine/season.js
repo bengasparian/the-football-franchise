@@ -4,9 +4,11 @@ import { simGame } from './sim.js';
 import { applyGameInjuries, weeklyInjuryUpdate } from './injuries.js';
 import { updateInSeasonRatings, offseasonProgression, setOvr } from './ratings.js';
 import { updateMorale, checkUnrest } from './personality.js';
-import { marketValue, teamCap, releasePlayer, capSeason } from './contracts.js';
+import { marketValue, teamCap, releasePlayer, capSeason, playerAsk, signContract } from './contracts.js';
+const playerAskSafe = (p) => { try { return playerAsk(p, p.tid); } catch { return null; } };
+const signContractSafe = (p, ask) => signContract(p.pid, p.tid, { years: Math.max(3, ask.years), apy: ask.apy, gtd: Math.round(ask.apy * Math.max(3, ask.years) * ask.gtdPct) }, { type: 'extend' });
 import { computeStandings, playoffSeeds, divisionOrder } from './standings.js';
-import { aiWeekly, aiResignPhase, aiTenders, aiCapCompliance, aiCutdown, aiOffseasonFill, aiExtensions } from './ai.js';
+import { aiWeekly, aiResignPhase, aiTenders, aiCapCompliance, aiCutdown, aiOffseasonFill, aiExtensions, fillToMax } from './ai.js';
 import { aiTradeRound, aiOffersToUser } from './trade.js';
 import { startFreeAgency, faDay, freeAgents, aiFillRoster } from './fa.js';
 import { startDraft, simDraftToUser, genDraftClass, computeDraftOrder, finishDraft } from './draft.js';
@@ -47,7 +49,9 @@ export function playGame(g) {
     g.box.pl[pid] = bl;
     const ss = (p.stats[s] ||= { tm: p.tid });
     ss.tm = p.tid;
+    if (ss.real && bucket !== 'PRE') { ss.real = false; ss.mixed = true; }
     addLine((ss[bucket] ||= {}), line);
+    if (bucket === 'REG') addLine((ss.SIM ||= {}), line);
     if (bucket !== 'PRE') {
       const cl = {};
       for (const k in line) if (!LOG_SKIP.has(k)) cl[k] = typeof line[k] === 'number' && !Number.isInteger(line[k]) ? Math.round(line[k] * 10) / 10 : line[k];
@@ -141,6 +145,7 @@ function afterWeek() {
       aiOffersToUser();
     }
     if (m.week === 12 || m.week === 15) for (const t of Lg.teams) aiExtensions(t.tid);
+    resolveHoldouts();
     for (const ut of m.userTids) Lg.teams[ut].scoutPts = (Lg.teams[ut].scoutPts || 0) + 40;
     weeklyEvents();
     setPowerRanks();
@@ -213,7 +218,10 @@ function finishPreseason() {
       return { error: `Roster cutdown: ${Lg.teams[ut].abbr} must get down to ${Lg.rules.activeMax} active players (currently ${c.ACT}). Use Roster > Auto cutdown or release players.` };
     }
   }
-  for (const t of Lg.teams) { if (!isUser(t.tid) || Lg.settings.autoUser.roster) aiCutdown(t.tid); aiCapCompliance(t.tid); aiWeekly(t.tid); }
+  for (const t of Lg.teams) {
+    if (!isUser(t.tid) || Lg.settings.autoUser.roster) { aiCutdown(t.tid); aiCapCompliance(t.tid); fillToMax(t.tid, Lg.rules.activeMax); }
+    aiWeekly(t.tid);
+  }
   // remove preseason games' boxes to save space
   for (const g of Lg.games) if (g.type === 'PRE' && g.s === m.season) delete g.box;
   m.phase = 'REGULAR_SEASON'; m.week = 1;
@@ -546,4 +554,26 @@ export function roundPlayer(p) {
   if (p.r) { for (const k of ['tal', 'pot', 'potEst']) if (p.r[k] != null) p.r[k] = Math.round(p.r[k] * 10) / 10; }
   if (p.pers) for (const k in p.pers) p.pers[k] = Math.round(p.pers[k] * 100) / 100;
   if (p.scout) delete p.scout.aiErr;
+}
+
+// Holdouts don't last forever: players report (sometimes "hold in") or the team pays them
+function resolveHoldouts() {
+  const Lg = G.L;
+  for (const p of Object.values(Lg.players)) {
+    if (!p.holdout || p.tid < 0) continue;
+    const user = isUser(p.tid);
+    if (!user && rnd() < 0.4) {
+      const ask = playerAskSafe(p);
+      if (ask && teamCap(p.tid, Lg.meta.season + 1).space > ask.apy * 0.8) {
+        signContractSafe(p, ask);
+        news(`${p.fn} ${p.ln} ends his holdout after signing an extension with the ${Lg.teams[p.tid].name}.`, { type: 'holdout', tids: [p.tid], pids: [p.pid] });
+        continue;
+      }
+    }
+    if (rnd() < 0.22 + (Lg.meta.week >= 6 ? 0.25 : 0)) {
+      p.holdout = false;
+      p.morale = clamp((p.morale ?? 50) - 8, 0, 100);
+      news(`${p.fn} ${p.ln} has reported to the ${Lg.teams[p.tid].name}, ending his holdout without a new deal.`, { type: 'holdout', tids: [p.tid], pids: [p.pid] });
+    }
+  }
 }

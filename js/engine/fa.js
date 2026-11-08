@@ -132,6 +132,7 @@ export function faDay() {
     const threshold = 0.82 - fa.day * 0.012;
     if (ready && best.sc >= threshold) {
       signContract(p.pid, best.o.tid, best.o);
+      if (p.contract) p.contract.faSigned = true;
       capCache[best.o.tid] = undefined;
       ((posIdx[best.o.tid] ||= {})[p.pos] ||= []).push(p.r.ovr);
       delete fa.offers[p.pid];

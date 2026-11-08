@@ -117,6 +117,8 @@ export function dashboard({ tid }, ctx) {
     counts: rosterCounts(tid), phase: m.phase, week: m.week, season: m.season,
     staff: ['hc', 'oc', 'dc'].map((r) => { const c = Lg.coaches[t.staff[r]]; return c ? { role: c.role, name: c.name, ovr: coachOvr(c) } : { role: r.toUpperCase(), name: 'Vacant', ovr: null }; }),
     goalResults: t.goalResults,
+    expiring: m.phase === 'RESIGN' ? ps.filter((p) => p.contract && !p.contract.ps && p.contract.exp === m.season).sort((a, b) => b.r.ovr - a.r.ovr).map((p) => pRow(p, { ask: playerAsk(p, tid).apy, mv: marketValue(p) })) : [],
+    tagUsed: t.tagUsed === m.season + 1,
   };
 }
 export function gameLite(g) {

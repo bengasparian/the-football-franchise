@@ -128,10 +128,10 @@ export function aiCapCompliance(tid, s = capSeason()) {
   const Lg = G.L;
   let cap = teamCap(tid, s);
   let guard = 0;
-  while (cap.space < 0 && guard++ < 25) {
+  while (cap.space < 0 && guard++ < 45) {
     // restructure the biggest eligible contract first
     const ps = Object.values(Lg.players).filter((p) => p.tid === tid && p.contract && !p.contract.ps);
-    const rs = ps.map((p) => ({ p, pr: restructurePreview(p) })).filter((x) => x.pr && x.pr.saves > 2e6 && (x.p.contract.restructures || 0) < 2).sort((a, b) => b.pr.saves - a.pr.saves)[0];
+    const rs = ps.map((p) => ({ p, pr: restructurePreview(p) })).filter((x) => x.pr && x.pr.saves > 1e6 && (x.p.contract.restructures || 0) < (guard > 15 ? 4 : 2)).sort((a, b) => b.pr.saves - a.pr.saves)[0];
     if (rs) { restructure(rs.p.pid); cap = teamCap(tid, s); continue; }
     // cut the worst value-for-money veteran with savings
     const cuts = ps.map((p) => ({ p, d: deadMoneyIfCut(p) })).filter((x) => x.d.save > 1e6)

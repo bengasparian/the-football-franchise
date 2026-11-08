@@ -263,7 +263,7 @@ export function updateInSeasonRatings() {
   const byPos = {};
   for (const p of Object.values(Lg.players)) {
     if (p.tid < 0) continue;
-    const st = p.stats?.[s]?.REG;
+    const st = p.stats?.[s]?.SIM;
     const pi = perfIndex(p, st);
     if (!pi) continue;
     (byPos[p.pos] ||= []).push({ p, ...pi, g: st.g });

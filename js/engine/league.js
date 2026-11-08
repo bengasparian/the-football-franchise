@@ -3,7 +3,7 @@ import { G, seedRng, rnd, gauss, clamp, age, nextId, rngState, news, capFor } fr
 import { CAP_2026, RULES_DEFAULT, DEFAULT_SLIDERS, TEAM_INFO, OWNERS, NO_TAX } from './const.js';
 import { genAttrs, initTalent, computeOvr, projectPeak } from './ratings.js';
 import { genPersonality } from './personality.js';
-import { contractFromData, makeContract, minDeal, psDeal, rookieContract, marketValue } from './contracts.js';
+import { contractFromData, makeContract, minDeal, psDeal, rookieContract, marketValue, teamCap } from './contracts.js';
 import { initCoaches } from './coaches.js';
 import { autoDepth } from './roster.js';
 import { genDraftClass } from './draft.js';
@@ -80,6 +80,12 @@ export function createLeague(data, opts) {
     L.meta.week = start === 'preseason' ? 0 : 1;
   }
   for (const t of L.teams) autoDepth(t.tid);
+  // Real teams roll unused cap forward and are always compliant. The public data has no rollover
+  // amounts, so give any team that would start over the cap a rollover that puts it just under.
+  for (const t of L.teams) {
+    const c = teamCap(t.tid, S0);
+    if (c.space < 3e6) t.rollover[S0] = Math.round((3e6 - c.space + rnd() * 4e6) / 1e5) * 1e5;
+  }
   // expected wins (preseason projection) from roster strength
   setExpectations();
   for (const ut of L.meta.userTids) setOwnerGoals(L.teams[ut]);

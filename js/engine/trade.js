@@ -144,7 +144,7 @@ export function evaluateTrade(userTid, aiTid, give, get) {
   for (const p of rp) {
     const t = Lg.teams[aiTid];
     if (p.pos === 'QB' && t.depth.QB?.[0] === p.pid && p.r.ovr >= 78 && age(p) <= 32 && !p.tradeReq) block = `${t.abbr} won't move their franchise quarterback.`;
-    if (p.contract?.signed === Lg.meta.season && p.contract && !p.contract.rookie && Lg.meta.phase !== 'REGULAR_SEASON' && p.contract.apy > 5e6 && !p.tradeReq) block = block || `${t.abbr} just signed ${p.fn} ${p.ln} and won't flip him yet.`;
+    if (p.contract && (p.contract.faSigned || p.contract.type === 'UFA') && p.contract.signed === Lg.meta.season && ['FREE_AGENCY', 'LEAGUE_MEETING', 'DRAFT', 'POST_DRAFT'].includes(Lg.meta.phase) && p.contract.apy > 5e6 && !p.tradeReq) block = block || `${t.abbr} just signed ${p.fn} ${p.ln} in free agency and won't flip him yet.`;
   }
   const accept = !err && !block && valIn - valOut >= margin;
   const pct = err || block ? 0 : valOut > 0 ? clamp((valIn / (valOut + margin)) * 100, 0, 150) : 100;
@@ -224,11 +224,13 @@ function buildOfferFor(userTid, aiTid, give, pos) {
   const target = valIn * 0.9;
   const { ps, picks } = assetsOf(aiTid);
   let pool = ps.filter((p) => (!pos || p.pos === pos) && !(p.pos === 'QB' && Lg.teams[aiTid].depth.QB?.[0] === p.pid));
-  pool = pool.map((p) => ({ p, v: packageValue(aiTid, [p], [], true) })).filter((x) => x.v <= target * 1.05).sort((a, b) => b.v - a.v);
+  const s = capSeason();
+  let uroom = teamCap(userTid, s).space + gp.reduce((a, p) => a + capHit(p, s), 0);
+  pool = pool.filter((p) => baseOnly(p, s) <= uroom).map((p) => ({ p, v: packageValue(aiTid, [p], [], true) })).filter((x) => x.v <= target * 1.05).sort((a, b) => b.v - a.v);
   const get = { players: [], picks: [] };
   let got = 0;
   for (const x of pool) {
-    if (got + x.v <= target * 1.02 && get.players.length < 2) { get.players.push(x.p.pid); got += x.v; }
+    if (got + x.v <= target * 1.02 && get.players.length < 2 && baseOnly(x.p, s) <= uroom) { get.players.push(x.p.pid); got += x.v; uroom -= baseOnly(x.p, s); }
     if (got >= target * 0.8) break;
   }
   const pk = picks.map((k) => ({ k, v: pickTradeValue(k, aiTid) })).sort((a, b) => b.v - a.v);
@@ -250,8 +252,11 @@ function balanceForTarget(userTid, aiTid, give, want) {
   const need = valOut * 1.08 + 25;
   const qb1 = Lg.teams[userTid].depth.QB?.[0];
   const { ps, picks } = assetsOf(userTid, g.players);
+  const s = capSeason();
+  // the receiving team must be able to absorb the salary
+  let room = teamCap(aiTid, s).space + want.players.reduce((a, pid) => a + capHit(Lg.players[pid], s) - futureProration(Lg.players[pid], s), 0) - g.players.reduce((a, pid) => a + baseOnly(Lg.players[pid], s), 0);
   const cands = [
-    ...ps.filter((p) => !(p.pid === qb1 && p.r.ovr >= 72)).map((p) => ({ type: 'p', id: p.pid, v: packageValue(aiTid, [p], [], false) })),
+    ...ps.filter((p) => !(p.pid === qb1 && p.r.ovr >= 72) && baseOnly(p, s) <= room).map((p) => ({ type: 'p', id: p.pid, v: packageValue(aiTid, [p], [], false), sal: baseOnly(p, s) })),
     ...picks.filter((k) => !g.picks.includes(k.id)).map((k) => ({ type: 'k', id: k.id, v: pickTradeValue(k, aiTid) })),
   ].filter((x) => x.v > 8);
   let v = cur();
@@ -261,11 +266,12 @@ function balanceForTarget(userTid, aiTid, give, want) {
     const gap = need - v;
     const free = cands.filter((x) => !used(x));
     // 1) one asset that closes the gap without overpaying much; 2) the biggest piece below the gap; 3) small overshoot
-    let c = free.filter((x) => x.v >= gap && x.v <= gap * 1.35).sort((a, b) => a.v - b.v)[0];
-    if (!c) c = free.filter((x) => x.v < gap).sort((a, b) => b.v - a.v)[0];
-    if (!c) c = free.filter((x) => x.v <= gap * 2.2).sort((a, b) => a.v - b.v)[0];
+    const fits = free.filter((x) => !x.sal || x.sal <= room);
+    let c = fits.filter((x) => x.v >= gap && x.v <= gap * 1.35).sort((a, b) => a.v - b.v)[0];
+    if (!c) c = fits.filter((x) => x.v < gap).sort((a, b) => b.v - a.v)[0];
+    if (!c) c = fits.filter((x) => x.v <= gap * 2.2).sort((a, b) => a.v - b.v)[0];
     if (!c) break;
-    if (c.type === 'p') g.players.push(c.id); else g.picks.push(c.id);
+    if (c.type === 'p') { g.players.push(c.id); room -= c.sal || 0; } else g.picks.push(c.id);
     v = cur();
   }
   if (v < need * 0.98) return null;

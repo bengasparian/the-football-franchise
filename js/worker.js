@@ -110,7 +110,7 @@ self.onmessage = async (e) => {
     }
     postMessage({ id, result, changed });
   } catch (err) {
-    console.error(err);
+    if (!/No league loaded/.test(err?.message)) console.error(err);
     postMessage({ id, error: err?.message || String(err) });
   }
 };
