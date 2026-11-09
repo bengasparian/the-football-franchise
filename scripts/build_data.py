@@ -883,7 +883,11 @@ for p in players:
             else: o["inj"]["wk"] = wk_
             o["inj"]["src"] = "report"
     if r.gstatus == "IR":
-        o["inj"] = injury_status(gid, nm_full, fix_team(r.team), True, "Undisclosed", espn_for(r))
+        e_ = espn_for(r)
+        if e_ and str(e_.get("status") or "").lower() == "active" and _re.search(r"activated|reinstated|designated to return|returned from", e_.get("com") or "", _re.I):
+            o["st"] = "ACT"  # activated since the weekly roster file was published
+        else:
+            o["inj"] = injury_status(gid, nm_full, fix_team(r.team), True, "Undisclosed", e_)
     car = career(gid)
     if car:
         o["car"] = car
