@@ -53,7 +53,6 @@ export function genDraftClass(s, n = 430) {
     p.colYrs = colYrs;
     // consensus media grade (imperfect): built on what scouts can see, not the hidden truth
     p.scout = { grade: p.r.tal * 0.65 + (seen + surprise * 0.2) * 0.35 + gauss(0, 3.5) + (ps === 'QB' ? 0.5 : 0) - ({ RB: 2, FB: 7, K: 11, P: 12, LS: 18 }[ps] || 0), lvl: {} };
-    p.combine = combineFor(p);
     out.push(p);
     Lg.players[p.pid] = p;
   }
@@ -70,6 +69,7 @@ export function genDraftClass(s, n = 430) {
     }
   }
   for (const p of out) p.col = collegeStats(p, s);
+  assignCombine(out);
   // consensus board ranking
   out.sort((a, b) => b.scout.grade - a.scout.grade);
   out.forEach((p, i) => { p.scout.rank = i + 1; });
@@ -78,17 +78,68 @@ export function genDraftClass(s, n = 430) {
   return out;
 }
 
-function combineFor(p) {
-  const a = p.r.a;
-  const inv = (pts, v) => { const sw = pts.map(([x, y]) => [y, x]).sort((m, n) => m[0] - n[0]); return interp(sw, v); };
-  const c = {};
-  if (rnd() > 0.1) c.forty = Math.round((inv([[4.22, 99], [4.3, 96], [4.4, 92], [4.5, 88], [4.6, 84], [4.7, 80], [4.85, 74], [5.0, 68], [5.2, 60], [5.4, 52], [5.6, 45]], a.spd) + gauss(0, 0.03)) * 100) / 100;
-  if (rnd() > 0.25) c.vertical = Math.round((inv([[24, 55], [28, 66], [32, 76], [36, 86], [40, 94], [44, 99]], a.jmp) + gauss(0, 1.2)) * 2) / 2;
-  if (rnd() > 0.3) c.bench = Math.round(inv([[8, 45], [14, 58], [20, 70], [25, 79], [30, 87], [35, 94], [40, 99]], a.str) + gauss(0, 1.5));
-  if (rnd() > 0.35) c.cone = Math.round((inv([[6.5, 98], [6.8, 92], [7.0, 86], [7.3, 77], [7.6, 68], [7.9, 60], [8.2, 52]], a.agi) + gauss(0, 0.06)) * 100) / 100;
-  if (rnd() > 0.35) c.shuttle = Math.round((inv([[3.9, 98], [4.1, 91], [4.25, 85], [4.45, 76], [4.65, 67], [4.9, 57]], a.agi) + gauss(0, 0.05)) * 100) / 100;
-  if (['K', 'P', 'LS'].includes(p.pos)) { delete c.bench; }
-  return c;
+// NFL Combine results by position: [mean, standard deviation] from real combines (roughly the last decade).
+// 40 in seconds, vertical and broad jump in inches, bench in 225-lb reps, 3-cone and shuttle in seconds.
+const COMBINE_NORMS = {
+  QB: { forty: [4.79, 0.13], vertical: [31.5, 2.8], broad: [113, 6], cone: [7.05, 0.18], shuttle: [4.32, 0.14] },
+  RB: { forty: [4.52, 0.09], vertical: [35, 2.8], broad: [121, 5.5], bench: [19, 4], cone: [7.05, 0.18], shuttle: [4.3, 0.13] },
+  FB: { forty: [4.74, 0.1], vertical: [33, 3], broad: [115, 6], bench: [24, 4], cone: [7.2, 0.2], shuttle: [4.4, 0.14] },
+  WR: { forty: [4.48, 0.08], vertical: [35.5, 2.7], broad: [123, 5.5], bench: [14, 3.8], cone: [6.95, 0.17], shuttle: [4.24, 0.12] },
+  TE: { forty: [4.7, 0.11], vertical: [33.5, 2.8], broad: [117, 6], bench: [20, 4], cone: [7.1, 0.19], shuttle: [4.35, 0.13] },
+  OT: { forty: [5.22, 0.13], vertical: [28.5, 2.8], broad: [104, 5.5], bench: [24, 4.5], cone: [7.75, 0.24], shuttle: [4.73, 0.16] },
+  OG: { forty: [5.28, 0.12], vertical: [28, 2.8], broad: [102, 5.5], bench: [26, 4.5], cone: [7.8, 0.24], shuttle: [4.75, 0.16] },
+  C: { forty: [5.2, 0.12], vertical: [28.5, 2.8], broad: [104, 5.5], bench: [26, 4.5], cone: [7.6, 0.22], shuttle: [4.6, 0.15] },
+  EDGE: { forty: [4.72, 0.11], vertical: [33.5, 3], broad: [118, 6], bench: [24, 4.5], cone: [7.2, 0.21], shuttle: [4.42, 0.15] },
+  DT: { forty: [5.03, 0.13], vertical: [29.5, 3], broad: [107, 6], bench: [28, 5], cone: [7.65, 0.24], shuttle: [4.65, 0.16] },
+  LB: { forty: [4.64, 0.11], vertical: [34.5, 2.8], broad: [119, 5.5], bench: [22, 4], cone: [7.05, 0.19], shuttle: [4.3, 0.13] },
+  CB: { forty: [4.46, 0.08], vertical: [36.5, 2.6], broad: [124, 5.5], bench: [14, 3.5], cone: [6.92, 0.17], shuttle: [4.2, 0.12] },
+  S: { forty: [4.53, 0.09], vertical: [36, 2.7], broad: [123, 5.5], bench: [16, 4], cone: [6.95, 0.17], shuttle: [4.22, 0.12] },
+  K: { forty: [4.95, 0.16], vertical: [30, 3], broad: [108, 6] },
+  P: { forty: [4.95, 0.16], vertical: [30, 3], broad: [108, 6] },
+  LS: { forty: [5.05, 0.15], vertical: [29, 3], broad: [106, 6], bench: [20, 4] },
+};
+// which traits drive each drill (weights)
+const DRILL_ATTR = { forty: { spd: 0.85, acc: 0.15 }, vertical: { jmp: 1 }, broad: { jmp: 0.6, acc: 0.25, str: 0.15 }, bench: { str: 1 }, cone: { agi: 0.75, acc: 0.25 }, shuttle: { agi: 0.65, acc: 0.35 } };
+const LOWER_BETTER = { forty: 1, cone: 1, shuttle: 1 };
+const SKIP = { forty: 0.08, vertical: 0.18, broad: 0.2, bench: 0.3, cone: 0.35, shuttle: 0.33 }; // sat out / pro day only
+// Each prospect is placed within his position group by how his traits compare to the rest of his class, so the
+// fastest receiver in a class runs a high-4.2/low-4.3 and a slow one a 4.6, while a typical guard runs about 5.28.
+// saves made before realistic combines: re-time every prospect once (their ratings are unchanged)
+export function upgradeCombines() {
+  const Lg = G.L;
+  if (!Lg || Lg.meta.combineV >= 2) return false;
+  const cls = {};
+  for (const p of Object.values(Lg.players)) if (p.status === 'PROSPECT') (cls[p.draftClass] ||= []).push(p);
+  for (const k in cls) assignCombine(cls[k]);
+  Lg.meta.combineV = 2;
+  return true;
+}
+function assignCombine(cls) {
+  const by = {};
+  for (const p of cls) (by[p.pos] ||= []).push(p);
+  for (const pos in by) {
+    const ps = by[pos], N = COMBINE_NORMS[pos] || COMBINE_NORMS.LB;
+    const stat = {};
+    for (const k of ['spd', 'acc', 'agi', 'jmp', 'str']) {
+      const v = ps.map((p) => p.r.a[k] ?? 50);
+      const m = v.reduce((a, b) => a + b, 0) / v.length;
+      const sd = Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, v.length - 1)) || 4;
+      stat[k] = [m, Math.max(sd, 2.5)];
+    }
+    for (const p of ps) {
+      const c = {};
+      for (const d in N) {
+        if (rnd() < SKIP[d] || (d === 'bench' && pos === 'QB')) continue;
+        let z = 0, wsum = 0;
+        for (const [k, w] of Object.entries(DRILL_ATTR[d])) { z += w * ((p.r.a[k] ?? 50) - stat[k][0]) / stat[k][1]; wsum += w; }
+        z = clamp(z / wsum * 0.9 + gauss(0, 0.4), -2.8, 2.8);
+        const [m, sd] = N[d];
+        const val = LOWER_BETTER[d] ? m - z * sd : m + z * sd;
+        c[d === 'broad' ? 'broad_jump' : d] = d === 'bench' || d === 'broad' ? Math.max(d === 'bench' ? 4 : 80, Math.round(val)) : d === 'vertical' ? Math.round(val * 2) / 2 : Math.round(val * 100) / 100;
+      }
+      p.combine = c;
+    }
+  }
 }
 
 export function prospects(s = null) {
@@ -406,7 +457,7 @@ export function collegeStats(p, draftS) {
     const n = (x, sd = 0.18) => Math.max(0, Math.round(x * (1 + gauss(0, sd))));
     const st = { y, g, gs: Math.round(g * clamp(role * 1.1, 0, 1)) };
     switch (p.pos) {
-      case 'QB': { const att = n(380 * f); st.cmp = n(att * (0.58 + q * 0.1), 0.04); st.att = att; st.yds = n(att * (7.2 + q * 1.8), 0.08); st.td = n(att * (0.045 + q * 0.03)); st.int = n(att * (0.03 - q * 0.012)); st.ryds = n(150 * f + (p.r.a.spd - 60) * 6 * f, 0.4); break; }
+      case 'QB': { const att = n(380 * f); st.cmp = n(att * (0.58 + q * 0.1), 0.04); st.att = att; st.yds = n(att * (7.2 + q * 1.8), 0.08); st.td = n(att * (0.05 + q * 0.035)); st.int = n(att * (0.03 - q * 0.012)); st.ryds = n(150 * f + (p.r.a.spd - 60) * 6 * f, 0.4); break; }
       case 'RB': case 'FB': { const car = n((p.pos === 'FB' ? 25 : 190) * f); st.car = car; st.ryds = n(car * (4.4 + q * 1.8), 0.1); st.rtd = n(car * (0.05 + q * 0.04)); st.rec = n(22 * f); st.recyds = n(st.rec * 8.5); break; }
       case 'WR': case 'TE': { const rec = n((p.pos === 'TE' ? 38 : 60) * f); st.rec = rec; st.recyds = n(rec * (12 + q * 4), 0.1); st.rectd = n(rec * (0.08 + q * 0.06)); break; }
       case 'OT': case 'OG': case 'C': { st.sacksAllowed = n(clamp(5 - q * 4, 0.3, 6) * role, 0.5); st.pancakes = n(30 * f * (0.6 + q)); break; }

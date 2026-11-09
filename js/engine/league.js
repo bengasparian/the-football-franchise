@@ -140,6 +140,7 @@ export function createLeague(data, opts) {
   setExpectations();
   captureRefDist();
   refreshTeamRef(1); // fixes the league reference that team overalls are spread around
+  L.meta.combineV = 2;
   for (const ut of L.meta.userTids) { setOwnerGoals(L.teams[ut]); if (L.teams[ut].scoutPts == null) L.teams[ut].scoutPts = 60; }
   // draft class for next April, scouting during the season
   genDraftClass(S0 + 1);

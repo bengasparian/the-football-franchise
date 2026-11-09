@@ -19,7 +19,7 @@ import { computeStandings, playoffSeeds, divisionOrder, clinchMarkers } from './
 import { simUntil, advance, superBowlNumeral, userBlocker } from './season.js';
 import { freeAgents, userOffer, offerScore } from './fa.js';
 import { evaluateTrade, executeTrade, tradeFinder, makeItWork, pickLabel, playerTradeValue, pickTradeValue, projectedPickNo, teamMode } from './trade.js';
-import { prospects, scoutProspect, scoutedView, draftCurrentPick, simDraftToUser, userOnClock, SCOUT_COST, draftClock, draftTick, simDraftPicks, simDraftRound, autoScout } from './draft.js';
+import { prospects, scoutProspect, scoutedView, draftCurrentPick, simDraftToUser, userOnClock, SCOUT_COST, draftClock, draftTick, simDraftPicks, simDraftRound, autoScout, upgradeCombines } from './draft.js';
 import { fantasyPool, fantasyOnClock, fantasyPick, fantasySimToUser } from './fantasy.js';
 import { hireCoach, fireCoach, coachOvr } from './coaches.js';
 import { attendanceFor, homeGameRevenue } from './finance.js';
@@ -952,3 +952,6 @@ export function editPlayer({ pid, ch = {} }, ctx) {
   transaction('edit', `Commissioner edited ${p.fn} ${p.ln}`, { tids: p.tid >= 0 ? [p.tid] : [], pids: [p.pid] });
   return { ok: true };
 }
+
+// one-time fixes for saves made with older versions (returns true if anything changed)
+export function upgradeSave() { return upgradeCombines(); }

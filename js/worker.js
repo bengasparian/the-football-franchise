@@ -81,6 +81,7 @@ const SPECIAL = {
     if (!L) throw new Error('Save not found');
     G.L = L; saveId = id;
     setRngState(L.meta.rng);
+    if (API.upgradeSave()) scheduleSave();
     return { ok: true, meta: L.meta };
   },
   async deleteSave({ id }) { await idb('saves', 'readwrite', (s) => s.delete(id)); await idb('index', 'readwrite', (s) => s.delete(id)); if (saveId === id) { saveId = null; G.L = null; } return { ok: true }; },
