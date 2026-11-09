@@ -13,12 +13,13 @@ import { personalityLabels } from './personality.js';
 import { marketValue, playerAsk, negotiate, signContract, teamCap, capSeason, futureCommitments, deadMoneyIfCut, releasePlayer, restructurePreview,
   restructure, applyTag, tagValues, exerciseOption, fifthYearOptionValue, capHit, psDeal, minDeal, idealYears, negotiationOptions } from './contracts.js';
 import { autoDepth, setDepth, rosterCounts } from './roster.js';
+import { OFF_SCHEMES, DEF_SCHEMES, ROLES, teamScheme, teamFit, playerFit, fitLabel, resolveRoles, roleScore } from './schemes.js';
 import { placeOnIR, activateFromIR } from './injuries.js';
 import { computeStandings, playoffSeeds, divisionOrder, clinchMarkers } from './standings.js';
 import { simUntil, advance, superBowlNumeral, userBlocker } from './season.js';
 import { freeAgents, userOffer, offerScore } from './fa.js';
 import { evaluateTrade, executeTrade, tradeFinder, makeItWork, pickLabel, playerTradeValue, pickTradeValue, projectedPickNo, teamMode } from './trade.js';
-import { prospects, scoutProspect, scoutedView, draftCurrentPick, simDraftToUser, userOnClock, SCOUT_COST, draftClock, draftTick, simDraftPicks, simDraftRound } from './draft.js';
+import { prospects, scoutProspect, scoutedView, draftCurrentPick, simDraftToUser, userOnClock, SCOUT_COST, draftClock, draftTick, simDraftPicks, simDraftRound, autoScout } from './draft.js';
 import { fantasyPool, fantasyOnClock, fantasyPick, fantasySimToUser } from './fantasy.js';
 import { hireCoach, fireCoach, coachOvr } from './coaches.js';
 import { attendanceFor, homeGameRevenue } from './finance.js';
@@ -176,7 +177,7 @@ function todoList(tid, ctx) {
       add('Watch camp battles in preseason games', '#/schedule');
       break;
     case 'REGULAR_SEASON':
-      if (injStarters.length) add(`Replace injured starters: ${injStarters.slice(0, 3).map((p) => p.ln).join(', ')}`, '#/depth', true);
+      if (injStarters.length) add(`Replace injured starters: ${injStarters.slice(0, 3).map((p) => p.ln).join(', ')}`, '#/lineup', true);
       if (cnt.ACT < Lg.rules.activeMax) add(`Fill open roster spots (${cnt.ACT}/${Lg.rules.activeMax})`, '#/fa');
       if (m.week <= Lg.rules.tradeDeadlineWeek) add(`Trade deadline after Week ${Lg.rules.tradeDeadlineWeek}${m.week >= Lg.rules.tradeDeadlineWeek - 1 ? ': last chance!' : ''}`, '#/trade', m.week >= Lg.rules.tradeDeadlineWeek - 1);
       { const ext = ps.filter((p) => p.contract && !p.contract.ps && p.contract.exp === m.season && p.r.ovr >= 75).length; if (ext) add(`${ext} key player${ext > 1 ? 's' : ''} in a contract year. Extend now or wait.`, '#/cap'); }
@@ -205,13 +206,21 @@ function lastPlayedWeek() {
   const last = gs.reduce((a, g) => (g.type === 'REG' ? Math.max(a, g.w) : a), 0);
   return last || null;
 }
-// Recap of a week: every game, who won, upsets and the standout performances.
-export function recap({ week = null, type = null } = {}) {
+// Recap of a week or playoff round: every game, who won, upsets and the standout performances. Your game is first.
+const PO_ROUNDS = ['WC', 'DIV', 'CONF', 'SB'];
+export function recap({ week = null, type = null, key = null } = {}, ctx = {}) {
   const Lg = L();
   const s = Lg.meta.season;
-  let gs;
-  if (type && type !== 'REG') gs = Lg.games.filter((g) => g.s === s && g.type === type && g.played);
-  else { const w = week ?? lastPlayedWeek(); gs = Lg.games.filter((g) => g.s === s && g.type === 'REG' && g.w === w && g.played); week = w; }
+  const played = Lg.games.filter((g) => g.s === s && g.played && g.type !== 'PRE');
+  const regWeeks = [...new Set(played.filter((g) => g.type === 'REG').map((g) => g.w))].sort((a, b) => a - b);
+  const poDone = PO_ROUNDS.filter((r) => played.some((g) => g.type === r));
+  const options = [...regWeeks.map((w) => ({ k: `W${w}`, l: `Week ${w}` })), ...poDone.map((r) => ({ k: r, l: ROUND_LABEL[r] }))];
+  if (!key) key = type && type !== 'REG' ? type : week != null ? `W${week}` : (options.at(-1)?.k || null);
+  if (!key) return { week: null, key: null, games: [], options, weeks: regWeeks, byes: [], season: s, bracket: playoffBracket(), label: null };
+  const isPO = PO_ROUNDS.includes(key);
+  const w = isPO ? null : +key.slice(1);
+  const gs = played.filter((g) => (isPO ? g.type === key : g.type === 'REG' && g.w === w));
+  const me = ctx.tid;
   const games = gs.map((g) => {
     const win = g.hs > g.as ? g.h : g.as > g.hs ? g.a : null;
     const exp = (tid) => T(tid).expectWins ?? 8.5;
@@ -219,16 +228,28 @@ export function recap({ week = null, type = null } = {}) {
     const stars = [];
     for (const pid in g.box?.pl || {}) {
       const p = Lg.players[pid]; if (!p || ['OT', 'OG', 'C', 'LS', 'FB'].includes(p.pos)) continue;
-      const b = g.box.pl[pid];
-      const v = av(p, b);
-      if (v > 9) stars.push({ pid, name: `${p.fn[0]}. ${p.ln}`, pos: p.pos, v, line: statSummary(p, b) });
+      const bx = g.box.pl[pid];
+      const v = av(p, bx);
+      if (v > 9) stars.push({ pid, name: `${p.fn[0]}. ${p.ln}`, pos: p.pos, v, line: statSummary(p, bx) });
     }
-    stars.sort((a, b) => b.v - a.v);
-    return { ...gameLite(g), upset, stars: stars.slice(0, 3) };
-  });
-  const weeks = [...new Set(Lg.games.filter((g) => g.s === s && g.type === 'REG' && g.played).map((g) => g.w))].sort((a, b) => a - b);
-  const byes = week ? Lg.teams.filter((t) => !Lg.games.some((g) => g.s === s && g.type === 'REG' && g.w === week && (g.h === t.tid || g.a === t.tid))).map((t) => t.abbr) : [];
-  return { week, games, weeks, byes, season: s };
+    stars.sort((x, y) => y.v - x.v);
+    return { ...gameLite(g), upset, stars: stars.slice(0, 3), mine: g.h === me || g.a === me };
+  }).sort((x, y) => y.mine - x.mine);
+  const byes = !isPO && w ? Lg.teams.filter((t) => !Lg.games.some((g) => g.s === s && g.type === 'REG' && g.w === w && (g.h === t.tid || g.a === t.tid))).map((t) => t.abbr) : [];
+  return { week: w, key, label: isPO ? ROUND_LABEL[key] : `Week ${w}`, playoff: isPO, games, options, weeks: regWeeks, byes, season: s, bracket: playoffBracket() };
+}
+// The playoff bracket for this season: seeds, every round's matchups (played or upcoming) and the champion.
+export function playoffBracket() {
+  const Lg = L();
+  const P = Lg.playoffs;
+  if (!P || P.s !== Lg.meta.season) return null;
+  const st = Lg.standingsCache || computeStandings();
+  const seedOf = (tid) => { for (const c of ['AFC', 'NFC']) { const i = P.seeds[c].indexOf(tid); if (i >= 0) return i + 1; } return null; };
+  const tm = (tid) => ({ tid, abbr: T(tid).abbr, logo: T(tid).logo, name: T(tid).name, seed: seedOf(tid), rec: st[tid] ? `${st[tid].w}-${st[tid].l}${st[tid].t ? '-' + st[tid].t : ''}` : '' });
+  const rounds = PO_ROUNDS.map((r) => ({ k: r, label: ROUND_LABEL[r], games: Lg.games.filter((g) => g.s === P.s && g.type === r).map((g) => ({ gid: g.gid, conf: g.conf || null, played: !!g.played, h: tm(g.h), a: tm(g.a), hs: g.hs, as: g.as, ot: g.ot, win: g.played ? (g.hs > g.as ? g.h : g.a) : null })) }));
+  const champ = Lg.champions.find((c) => c.s === P.s);
+  return { round: Lg.meta.phase === 'PLAYOFFS' ? P.round : null, seeds: { AFC: P.seeds.AFC.map(tm), NFC: P.seeds.NFC.map(tm) }, rounds, champ: champ ? tm(champ.tid) : null,
+    alive: [...P.alive.AFC, ...P.alive.NFC] };
 }
 // Live award race (top candidates right now).
 export function awardRace() {
@@ -319,7 +340,20 @@ export function playerDetail({ pid }, ctx) {
     dev: p.status === 'PROSPECT' && (scouted?.lvl ?? 0) < 3 ? null : (p.dev || 'Normal'), devInfo: DEV_INFO[p.dev || 'Normal'],
     lon: p.status === 'PROSPECT' && (scouted?.lvl ?? 0) < 2 ? null : p.lon, lonLabel: p.lon != null ? longevityLabel(p.lon) : null,
     col: p.col || null, colYrs: p.colYrs || null, gen: p.status === 'PROSPECT' ? !!p.gen && (scouted?.lvl ?? 0) >= 1 : !!p.gen,
+    schemeFit: schemeFitFor(p, ctx),
   };
+}
+
+// how a player fits his team's scheme (or, for anyone else, your team's scheme)
+function schemeFitFor(p, ctx) {
+  const tt = p.tid >= 0 ? T(p.tid) : ctx.tid != null ? T(ctx.tid) : null;
+  if (!tt || p.status === 'PROSPECT' && ctx.tid == null) return null;
+  const sch = teamScheme(p.tid >= 0 ? T(p.tid) : T(ctx.tid));
+  const off = ['QB', 'RB', 'FB', 'WR', 'TE', 'OT', 'OG', 'C'].includes(p.pos);
+  const name = off ? sch.off : sch.def;
+  const f = playerFit(p, off ? 'off' : 'def', name);
+  if (f == null) return null;
+  return { scheme: name, team: tt.abbr, fit: f, label: fitLabel(f) };
 }
 
 // ------------------------------------------------------------------ depth chart
@@ -330,10 +364,60 @@ export function depth({ tid }, ctx) {
   const out = {};
   for (const pos of [...POSITIONS, 'KR', 'PR']) out[pos] = (t.depth[pos] || []).map((pid) => pRow(Lg.players[pid])).filter((x) => x.tid === tid);
   const pool = Object.values(Lg.players).filter((p) => p.tid === tid && p.status === 'ACT').map((p) => pRow(p));
-  return { team: teamLite(t), depth: out, pool, slots: DEPTH_SLOTS, mine: own(ctx, tid), locked: !!t.depthLocked };
+  return { team: teamLite(t), depth: out, pool, slots: DEPTH_SLOTS, mine: own(ctx, tid), locked: !!t.depthLocked, injAuto: t.injAuto !== false };
 }
+export function setInjAuto({ tid, on }, ctx) { requireOwn(ctx, tid); T(tid).injAuto = !!on; return { ok: true }; }
 export function setDepthChart({ tid, pos, pids }, ctx) { requireOwn(ctx, tid); return setDepth(tid, pos, pids); }
-export function autoDepthChart({ tid }, ctx) { requireOwn(ctx, tid); autoDepth(tid); T(tid).depthLocked = false; return { ok: true }; }
+export function autoDepthChart({ tid }, ctx) { requireOwn(ctx, tid); autoDepth(tid); T(tid).depthLocked = false; T(tid).roles = {}; return { ok: true }; }
+
+// ------------------------------------------------------------------ schemes & situational roles (Adjust Lineup)
+export function lineupInfo({ tid }, ctx) {
+  const Lg = L();
+  tid = tid ?? ctx.tid;
+  const t = T(tid);
+  const sch = teamScheme(t);
+  const fitRows = (side, name) => teamFit(t, side, name).rows.map((r) => ({ ...pRow(Lg.players[r.pid]), slot: r.pos, fit: r.fit, fitL: fitLabel(r.fit) }));
+  const list = (S, side, coach) => Object.entries(S).map(([name, x]) => ({ name, short: x.short, desc: x.desc, front: x.front || null, fit: teamFit(t, side, name).pct, coach: name === coach,
+    wants: Object.entries(x.wants).map(([g, w]) => ({ g, attrs: Object.entries(w).sort((a, b) => b[1] - a[1]).map(([k]) => k) })) }));
+  const R = resolveRoles(t);
+  const set = t.roles || {};
+  const ok = (p) => p && p.tid === tid && p.status === 'ACT';
+  const roles = Object.entries(ROLES).map(([k, r]) => {
+    const cands = Object.values(Lg.players).filter((p) => ok(p) && r.pos.includes(p.pos)).map((p) => ({ ...pRow(p), score: roleScore(p, k) }))
+      .sort((a, b) => b.score - a.score).slice(0, 14);
+    const cur = R[k] ? { ...pRow(R[k]), score: roleScore(R[k], k) } : null;
+    return { key: k, label: r.label, side: r.side, where: r.where, desc: r.desc, cur, auto: !(set[k] && ok(Lg.players[set[k]]) && cur && cur.pid === set[k]), cands };
+  });
+  return {
+    team: teamLite(t), mine: own(ctx, tid),
+    scheme: { ...sch, fitOff: teamFit(t, 'off', sch.off).pct, fitDef: teamFit(t, 'def', sch.def).pct, offRows: fitRows('off', sch.off), defRows: fitRows('def', sch.def),
+      oc: Lg.coaches[t.staff?.oc]?.name || null, dc: Lg.coaches[t.staff?.dc]?.name || null },
+    off: list(OFF_SCHEMES, 'off', sch.ocScheme), def: list(DEF_SCHEMES, 'def', sch.dcScheme), roles,
+  };
+}
+export function setScheme({ tid, side, name }, ctx) {
+  requireOwn(ctx, tid);
+  const t = T(tid);
+  if (name && !(side === 'off' ? OFF_SCHEMES : DEF_SCHEMES)[name]) throw new Error('Unknown scheme');
+  t.scheme ||= {};
+  if (name) t.scheme[side] = name; else delete t.scheme[side];
+  return { ok: true, scheme: teamScheme(t) };
+}
+export function setRole({ tid, role, pid }, ctx) {
+  requireOwn(ctx, tid);
+  const t = T(tid);
+  if (!ROLES[role]) throw new Error('Unknown role');
+  t.roles ||= {};
+  if (!pid) { delete t.roles[role]; return { ok: true }; }
+  const p = L().players[pid];
+  if (!p || p.tid !== tid) throw new Error('That player is not on your team.');
+  if (!ROLES[role].pos.includes(p.pos)) throw new Error(`${ROLES[role].label} has to be a ${ROLES[role].pos.join('/')}.`);
+  // one player can't be your Mike and your Will at the same time
+  for (const k of ['MIKE', 'WILL', 'SAM']) if (['MIKE', 'WILL', 'SAM'].includes(role) && k !== role && t.roles[k] === pid) delete t.roles[k];
+  for (const k of ['NICKEL', 'DIME']) if (['NICKEL', 'DIME'].includes(role) && k !== role && t.roles[k] === pid) delete t.roles[k];
+  t.roles[role] = pid;
+  return { ok: true };
+}
 
 // ------------------------------------------------------------------ standings & schedule
 export function standings({ season } = {}) {
@@ -562,7 +646,7 @@ export function tradeFind({ give, want, pos }, ctx) {
   const res = tradeFinder(ctx.tid, { give, want, pos });
   const Lg = L();
   const desc = (as) => ({ players: as.players.map((pid) => pRow(Lg.players[pid])), picks: as.picks.map((id) => ({ id, label: pickLabel(Lg.picks.find((x) => x.id === id)) })) });
-  return res.map((r) => ({ tid: r.tid, team: teamLite(T(r.tid)), give: r.give, get: r.get, giveV: desc(r.give), getV: desc(r.get), meter: r.ev.meter }));
+  return res.map((r) => ({ tid: r.tid, team: teamLite(T(r.tid)), give: r.give, get: r.get, giveV: desc(r.give), getV: desc(r.get), meter: r.ev.meter, kind: r.kind || null, needsSpot: r.needsSpot || null }));
 }
 function offerView(o) {
   const Lg = L();
@@ -600,11 +684,12 @@ export function draftBoard({ pos = 'ALL' } = {}, ctx) {
       const v = scoutedView(p, ctx.tid);
       return { pid: p.pid, name: `${p.fn} ${p.ln}`, pos: p.pos, age: age(p, (Lg.draft?.s || Lg.meta.season + 1)), college: p.college, ht: p.ht, wt: p.wt, rank: p.scout.rank, posRank: p.scout.posRank, combine: p.combine, lvl: v.lvl, lo: v.ovrLo, hi: v.ovrHi, pot: v.pot, proj: projRound(p.scout.rank), onBoard: myBoard.includes(p.pid), gen: !!p.gen && v.lvl >= 1, colYrs: p.colYrs || null };
     }),
-    scoutPts: t.scoutPts || 0, points: t.scoutPts || 0, costs: SCOUT_COST, board: myBoard,
+    scoutPts: t.scoutPts || 0, points: t.scoutPts || 0, costs: SCOUT_COST, board: myBoard, autoScout: !!t.autoScout,
   };
 }
 function projRound(rank) { return rank <= 32 ? '1st' : rank <= 64 ? '2nd' : rank <= 100 ? '3rd' : rank <= 140 ? '4th' : rank <= 180 ? '5th' : rank <= 220 ? '6th' : rank <= 262 ? '7th' : 'UDFA'; }
 export function scout({ pid }, ctx) { requireOwn(ctx, ctx.tid); return scoutProspect(ctx.tid, pid); }
+export function setAutoScout({ on }, ctx) { requireOwn(ctx, ctx.tid); const t = T(ctx.tid); t.autoScout = !!on; const spent = on ? autoScout(ctx.tid) : 0; return { ok: true, spent }; }
 export function boardToggle({ pid }, ctx) { const t = T(ctx.tid); t.board ||= []; t.board = t.board.includes(pid) ? t.board.filter((x) => x !== pid) : [...t.board, pid]; return { ok: true }; }
 export function boardMove({ pid, dir }, ctx) { const t = T(ctx.tid); const b = t.board || []; const i = b.indexOf(pid); const j = i + dir; if (i < 0 || j < 0 || j >= b.length) return { ok: true }; [b[i], b[j]] = [b[j], b[i]]; return { ok: true }; }
 export function draftState(_, ctx) {
@@ -647,7 +732,11 @@ export function fantasyState({ pos = 'ALL', q = '' } = {}, ctx) {
   if (qq) pool = pool.filter((p) => `${p.fn} ${p.ln}`.toLowerCase().includes(qq));
   pool.sort((a, b) => b.r.ovr - a.r.ovr);
   const mine = Object.values(Lg.players).filter((p) => p.tid === ctx.tid);
-  return { F: F ? { round: F.round, idx: F.idx, done: F.done, rounds: F.rounds } : null, onClock: fantasyOnClock(), mineOnClock: fantasyOnClock() === ctx.tid, pool: pool.slice(0, 300).map((p) => pRow(p)), mine: mine.map((p) => pRow(p)), log: (F?.log || []).slice(-60).reverse().map((x) => ({ ...x, name: `${Lg.players[x.pid].fn} ${Lg.players[x.pid].ln}`, pos: Lg.players[x.pid].pos, ovr: Lg.players[x.pid].r.ovr, abbr: T(x.tid).abbr })), order: F?.order.map((t) => T(t).abbr) };
+  // Madden-style board: one column per team (round-1 order), one row per round; snake order means even rounds run backwards
+  const board = {};
+  for (const x of F?.log || []) { const pl = Lg.players[x.pid]; (board[x.r] ||= {})[x.tid] = { pid: x.pid, name: `${pl.fn[0]}. ${pl.ln}`, pos: pl.pos, ovr: pl.r.ovr }; }
+  return { board, teams: (F?.order || []).map((tid) => ({ tid, abbr: T(tid).abbr, logo: T(tid).logo })), me: ctx.tid,
+    F: F ? { round: F.round, idx: F.idx, done: F.done, rounds: F.rounds } : null, onClock: fantasyOnClock(), mineOnClock: fantasyOnClock() === ctx.tid, pool: pool.slice(0, 300).map((p) => pRow(p)), mine: mine.map((p) => pRow(p)), log: (F?.log || []).slice(-60).reverse().map((x) => ({ ...x, name: `${Lg.players[x.pid].fn} ${Lg.players[x.pid].ln}`, pos: Lg.players[x.pid].pos, ovr: Lg.players[x.pid].r.ovr, abbr: T(x.tid).abbr })), order: F?.order.map((t) => T(t).abbr) };
 }
 export function fantasyMakePick({ pid }, ctx) { if (fantasyOnClock() !== ctx.tid) return { error: 'Not your pick' }; return fantasyPick(pid); }
 export function fantasySim({ all }, ctx) { if (!ctx.host && fantasyOnClock() !== ctx.tid && G.L.meta.userTids.includes(fantasyOnClock())) return { error: 'Waiting on another GM' }; return fantasySimToUser(!!all); }
@@ -742,7 +831,15 @@ export function takeOverTeam({ tid, from }, ctx) {
 export function dismissFired({ tid }) { (G.L.meta.firedNotices || []).forEach((f) => { if (f.tid === tid) f.seen = true; }); G.L.teams[tid].jobSec = 40; return { ok: true }; }
 export function sim({ target }, ctx) {
   if (G.L.meta.online && !ctx.host) return { error: 'Only the host can advance the league.' };
-  return simUntil(target || 'week');
+  const t = target || 'week';
+  if (t === 'week') return simUntil(t);
+  // Simming more than one week: your staff handles everything a team has to do (injury moves, IR, filling the
+  // roster, the depth chart) so the sim never stops for chores. Week-by-week, your own settings apply.
+  const au = G.L.settings.autoUser;
+  const saved = { ...au };
+  G.multiSim = true;
+  Object.assign(au, { depth: true, injuries: true, roster: true });
+  try { return simUntil(t); } finally { Object.assign(au, saved); G.multiSim = false; }
 }
 export function faLive(_, ctx) {
   // live tick: only the host's clock drives signings in an online league

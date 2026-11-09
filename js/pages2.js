@@ -52,18 +52,25 @@ ACTIONS.trMake = async () => {
 };
 
 // ===================================================================== TRADE FINDER
-const TF = { give: [], pos: 'ALL', results: null };
+const TF = { give: [], picks: [], pos: 'ALL', results: null };
 PAGES2.finder = async () => {
   const mine = await call('tradeAssets', { tid: session.tid });
-  return `<div class="page-h"><h1>Trade Finder</h1><span class="sub">Pick what you're shopping. AI GMs answer with real offers.</span></div>
-  <div class="grid g12"><div class="card"><h2>Shop these players</h2><div class="scroll">${mine.players.map((p) => { const on = TF.give.includes(p.pid); return `<div class="asset ${on ? 'on' : ''}" data-act="tfToggle" data-id="${esc(p.pid)}"><input type="checkbox" ${on ? 'checked' : ''}>${hs(p.hs, "", p)}<div style="flex:1"><b>${esc(p.name)}</b><div class="tiny muted">${p.pos} · ${p.age}y · ${contractTxt(p.contract)}</div></div>${ovr(p.ovr)}</div>`; }).join('')}</div>
-    <div class="row" style="margin-top:10px"><span class="small muted">Looking for</span>${posSel(TF.pos, 'tfPos')}<button class="btn pri" data-act="tfRun" ${TF.give.length ? '' : 'disabled'}>Find offers</button></div></div>
-  <div class="card"><h2>Offers ${TF.results ? `(${TF.results.length})` : ''}</h2>${TF.results == null ? '<div class="muted">Select players to shop and hit Find offers.</div>' : TF.results.length ? TF.results.map((r, i) => `<div class="row" style="border-bottom:1px solid var(--line);padding:10px 0;align-items:flex-start">${logo(r.team.logo, 'md')}<div style="flex:1"><b>${esc(r.team.region)} ${esc(r.team.name)}</b><div class="small">They send: ${[...r.getV.players.map((p) => `<a href="#/player/${p.pid}">${esc(p.name)}</a> (${p.pos} ${p.ovr}, ${p.age}y)`), ...r.getV.picks.map((k) => esc(k.label))].join(', ') || '—'}</div><div class="small muted">You send: ${[...r.giveV.players.map((p) => esc(p.name)), ...r.giveV.picks.map((k) => esc(k.label))].join(', ')}</div></div><div class="col"><button class="btn sm pri" data-act="tfAccept" data-i="${i}">Accept</button><button class="btn sm" data-act="tfLoad" data-i="${i}">Edit in Trade Center</button></div></div>`).join('') : '<div class="muted">No team wants that package right now. Try different players or another position.</div>'}</div></div>`;
+  const n = TF.give.length + TF.picks.length;
+  const lookSel = `<select data-change="tfPos" title="What you want back"><option value="ALL">Best offer (anything)</option><option value="PICKS" ${TF.pos === 'PICKS' ? 'selected' : ''}>Draft picks only</option>${POS.map((p) => `<option ${TF.pos === p ? 'selected' : ''}>${p}</option>`).join('')}</select>`;
+  const pickRow = (k) => { const on = TF.picks.includes(k.id); return `<div class="asset ${on ? 'on' : ''}" data-act="tfPick" data-id="${esc(k.id)}" title="Trade value ${Math.round(k.value)}"><input type="checkbox" ${on ? 'checked' : ''}><div style="flex:1"><b>${esc(k.label)}</b><div class="tiny muted">Trade value ${Math.round(k.value)}</div></div></div>`; };
+  const offerTxt = (r) => [...r.getV.players.map((p) => `<a href="#/player/${p.pid}">${esc(p.name)}</a> (${p.pos} ${p.ovr}, ${p.age}y)`), ...r.getV.picks.map((k) => esc(k.label))].join(', ') || '—';
+  return `<div class="page-h"><h1>Trade Finder</h1><span class="sub">Shop players, draft picks or both. AI GMs answer with real offers.</span></div>
+  <div class="grid g12"><div class="card"><h2>Shop these players</h2><div class="scroll" style="max-height:360px">${mine.players.map((p) => { const on = TF.give.includes(p.pid); return `<div class="asset ${on ? 'on' : ''}" data-act="tfToggle" data-id="${esc(p.pid)}"><input type="checkbox" ${on ? 'checked' : ''}>${hs(p.hs, '', p)}<div style="flex:1"><b>${esc(p.name)}</b><div class="tiny muted">${p.pos} · ${p.age}y · ${contractTxt(p.contract)}</div></div>${ovr(p.ovr)}</div>`; }).join('')}</div>
+    <h2 style="margin-top:14px">Shop your draft picks</h2><div class="scroll" style="max-height:260px">${mine.picks.filter((k) => k.tradable).map(pickRow).join('') || '<div class="muted small">You have no tradable picks.</div>'}</div>
+    <div class="row" style="margin-top:10px"><span class="small muted">Looking for</span>${lookSel}<button class="btn pri" data-act="tfRun" ${n ? '' : 'disabled'} title="Ask every AI team what they'd give">Find offers</button></div>
+    <div class="tiny muted" style="margin-top:6px">Shopping only picks? Teams answer with a player or by trading down, giving you more picks that come later.</div></div>
+  <div class="card"><h2>Offers ${TF.results ? `(${TF.results.length})` : ''}</h2>${TF.results == null ? '<div class="muted">Select players or picks to shop and hit Find offers.</div>' : TF.results.length ? TF.results.map((r, i) => `<div class="row" style="border-bottom:1px solid var(--line);padding:10px 0;align-items:flex-start">${logo(r.team.logo, 'md')}<div style="flex:1"><b>${esc(r.team.region)} ${esc(r.team.name)}</b>${r.kind === 'down' ? ' <span class="badge">Trade down</span>' : ''}<div class="small">They send: ${offerTxt(r)}</div><div class="small muted">You send: ${[...r.giveV.players.map((p) => esc(p.name)), ...r.giveV.picks.map((k) => esc(k.label))].join(', ')}</div>${r.needsSpot ? '<div class="tiny warn">They\'d accept, but your roster is full. Release or IR someone first.</div>' : ''}</div><div class="col"><button class="btn sm pri" data-act="tfAccept" data-i="${i}" ${r.needsSpot ? 'disabled title="Open a roster spot first"' : ''}>Accept</button><button class="btn sm" data-act="tfLoad" data-i="${i}">Edit in Trade Center</button></div></div>`).join('') : '<div class="muted">No team wants that package right now. Try different players or picks, or ask for something else.</div>'}</div></div>`;
 };
 ACTIONS.tfToggle = (el) => { const i = TF.give.indexOf(el.dataset.id); if (i >= 0) TF.give.splice(i, 1); else TF.give.push(el.dataset.id); TF.results = null; rerender(); };
+ACTIONS.tfPick = (el) => { const i = TF.picks.indexOf(el.dataset.id); if (i >= 0) TF.picks.splice(i, 1); else TF.picks.push(el.dataset.id); TF.results = null; rerender(); };
 ACTIONS.tfPos = (el) => { TF.pos = el.value; };
-ACTIONS.tfRun = async () => { TF.results = await act('tradeFind', { give: { players: TF.give, picks: [] }, want: { players: [], picks: [] }, pos: TF.pos === 'ALL' ? null : TF.pos }, { refresh: false, busyText: 'Calling around the league…' }); rerender(); };
-ACTIONS.tfAccept = async (el) => { const r = TF.results[+el.dataset.i]; const res = await call('tradePropose', { aiTid: r.tid, give: r.give, get: r.get }); if (res.ok) { toast(esc(`Trade done: ${res.text}`), 'good', 7000); TF.give = []; TF.results = null; rerender(); } else toast(esc(res.message || res.error), 'error'); };
+ACTIONS.tfRun = async () => { TF.results = await act('tradeFind', { give: { players: TF.give, picks: TF.picks }, want: { players: [], picks: [] }, pos: TF.pos === 'ALL' ? null : TF.pos }, { refresh: false, busyText: 'Calling around the league…' }); rerender(); };
+ACTIONS.tfAccept = async (el) => { const r = TF.results[+el.dataset.i]; const res = await call('tradePropose', { aiTid: r.tid, give: r.give, get: r.get }); if (res.ok) { toast(esc(`Trade done: ${res.text}`), 'good', 7000); TF.give = []; TF.picks = []; TF.results = null; APP.pageCache = {}; rerender(); } else toast(esc(res.message || res.error), 'error'); };
 ACTIONS.tfLoad = (el) => { const r = TF.results[+el.dataset.i]; TR.tid = r.tid; TR.give = r.give; TR.get = r.get; location.hash = `#/trade/${r.tid}`; };
 
 // ===================================================================== OFFERS
@@ -126,7 +133,28 @@ ACTIONS.draftSimNext = async () => act('draftSim', { all: false }, { busyText: '
 ACTIONS.draftSimAll = async () => { if (confirm('Let your scouts make all of your remaining picks?')) await act('draftSim', { all: true }, { busyText: 'Simulating the draft…' }); };
 
 // ===================================================================== FANTASY DRAFT
-let fdPos = 'ALL', fdQ = '';
+let fdPos = 'ALL', fdQ = '', fdView = 'players', fdBlock = null;
+const POS_CLS = { QB: 'q', RB: 'o', FB: 'o', WR: 'o', TE: 'o', OT: 'l', OG: 'l', C: 'l', EDGE: 'd', DT: 'd', LB: 'd', CB: 'b', S: 'b', K: 's', P: 's', LS: 's' };
+// Madden-style draft board: teams across the top, rounds down the side, each pick in its square
+function fdBoard(f) {
+  const cur = f.F.round;
+  const blk = fdBlock ?? Math.floor((cur - 1) / 8);
+  const r0 = blk * 8 + 1, r1 = Math.min(f.F.rounds, r0 + 7);
+  const onClockCol = f.onClock;
+  const rows = [];
+  for (let r = r0; r <= r1; r++) {
+    rows.push(`<tr><th class="rd" title="${r % 2 ? 'Picks go left to right' : 'Snake: picks go right to left'}">R${r}<span class="tiny dim">${r % 2 ? '→' : '←'}</span></th>${f.teams.map((t, i) => {
+      const x = f.board[r]?.[t.tid];
+      const no = (r - 1) * 32 + (r % 2 ? i + 1 : 32 - i);
+      const now = r === cur && t.tid === onClockCol;
+      return `<td class="${t.tid === f.me ? 'me' : ''} ${now ? 'now' : ''}" title="Pick ${no}${x ? `: ${esc(x.name)} (${x.pos} ${x.ovr})` : now ? ' (on the clock)' : ''}">${x ? `<a href="#/player/${esc(x.pid)}" class="bp p-${POS_CLS[x.pos] || 'o'}"><b>${esc(x.pos)}</b> ${esc(x.name)}<span>${x.ovr}</span></a>` : now ? '<span class="clk">ON THE CLOCK</span>' : `<span class="dim tiny">${no}</span>`}</td>`;
+    }).join('')}</tr>`);
+  }
+  const blocks = Math.ceil(f.F.rounds / 8);
+  return `<div class="card"><div class="card-h"><h2>Draft board</h2><div class="btn-group">${Array.from({ length: blocks }, (_, b) => `<button class="btn sm ${b === blk ? 'pri' : ''}" data-act="fdBlock" data-b="${b}">R${b * 8 + 1}-${Math.min(f.F.rounds, b * 8 + 8)}</button>`).join('')}</div></div>
+    <div class="tiny muted" style="margin-bottom:6px">Snake draft: odd rounds go left to right, even rounds right to left. Your column is highlighted. Colors: QB, skill players, line, defensive front, secondary, specialists.</div>
+    <div class="fd-board"><table><thead><tr><th></th>${f.teams.map((t) => `<th class="${t.tid === f.me ? 'me' : ''}" title="${esc(t.abbr)}">${logo(t.logo, 'sm')}<div>${esc(t.abbr)}</div></th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div></div>`;
+}
 const FD_TABS = ['ALL', 'QB', 'RB', 'WR', 'TE', 'OT', 'OG', 'C', 'EDGE', 'DT', 'LB', 'CB', 'S', 'K', 'P', 'LS', 'FB'];
 const FD_NEED = { QB: 3, RB: 4, WR: 6, TE: 3, OT: 4, OG: 4, C: 2, EDGE: 5, DT: 4, LB: 4, CB: 6, S: 4, K: 1, P: 1, LS: 1, FB: 1 };
 PAGES2.fantasy = async () => {
@@ -135,8 +163,12 @@ PAGES2.fantasy = async () => {
   if (f.F.done) return `<div class="card"><h2>Fantasy draft complete</h2><a class="btn pri" href="#/roster">See your roster</a></div>`;
   const teamCounts = {};
   for (const p of f.mine) teamCounts[p.pos] = (teamCounts[p.pos] || 0) + 1;
-  return `<div class="page-h"><h1>Fantasy Draft</h1><span class="sub">Round ${f.F.round} of ${f.F.rounds} · Pick ${f.F.idx + 1}</span><div class="right">${f.mineOnClock ? '<span class="badge grn">You are on the clock</span><button class="btn" data-act="fdAuto">Auto-pick</button>' : ''}${net.mode !== 'guest' ? '<button class="btn pri" data-act="fdSim">Sim to my pick</button><button class="btn" data-act="fdSimAll">Auto-draft the rest</button>' : ''}</div></div>
-  <div class="card" style="padding:10px 12px"><div class="row" style="flex-wrap:wrap;gap:6px">${FD_TABS.map((p) => { const have = teamCounts[p] || 0; const need = FD_NEED[p]; return `<button class="btn sm ${fdPos === p ? 'pri' : ''}" data-act="fdTab" data-p="${p}" title="${p === 'ALL' ? 'Show every available player' : `Show only ${p}s. You have ${have}, a typical roster carries about ${need}.`}">${p}${p !== 'ALL' ? ` <span class="${have >= need ? 'good' : have ? 'warn' : 'dim'}" style="font-size:11px">${have}/${need}</span>` : ''}</button>`; }).join('')}
+  const mySlot = f.teams.findIndex((t) => t.tid === f.me) + 1;
+  const viewTabs = `<div class="tabs"><a class="${fdView === 'players' ? 'on' : ''}" data-act="fdView" data-v="players">Available players</a><a class="${fdView === 'board' ? 'on' : ''}" data-act="fdView" data-v="board">Draft board</a></div>`;
+  const head = `<div class="page-h"><h1>Fantasy Draft</h1><span class="sub">Round ${f.F.round} of ${f.F.rounds} · Pick ${(f.F.round - 1) * 32 + f.F.idx + 1}${mySlot ? ` · you pick ${mySlot}${mySlot === 1 ? 'st' : mySlot === 2 ? 'nd' : mySlot === 3 ? 'rd' : 'th'} in odd rounds, ${33 - mySlot}${33 - mySlot === 1 ? 'st' : 33 - mySlot === 2 ? 'nd' : 33 - mySlot === 3 ? 'rd' : 'th'} in even rounds` : ''}</span><div class="right">`;
+  if (fdView === 'board') return `${head}${f.mineOnClock ? '<span class="badge grn">You are on the clock</span><button class="btn" data-act="fdAuto">Auto-pick</button>' : ''}${net.mode !== 'guest' ? '<button class="btn pri" data-act="fdSim">Sim to my pick</button><button class="btn" data-act="fdSimAll">Auto-draft the rest</button>' : ''}</div></div>${viewTabs}${fdBoard(f)}`;
+  return `${head.replace('<div class="right">', '<div class="right">')}${f.mineOnClock ? '<span class="badge grn">You are on the clock</span><button class="btn" data-act="fdAuto">Auto-pick</button>' : ''}${net.mode !== 'guest' ? '<button class="btn pri" data-act="fdSim">Sim to my pick</button><button class="btn" data-act="fdSimAll">Auto-draft the rest</button>' : ''}</div></div>
+  ${viewTabs}<div class="card" style="padding:10px 12px"><div class="row" style="flex-wrap:wrap;gap:6px">${FD_TABS.map((p) => { const have = teamCounts[p] || 0; const need = FD_NEED[p]; return `<button class="btn sm ${fdPos === p ? 'pri' : ''}" data-act="fdTab" data-p="${p}" title="${p === 'ALL' ? 'Show every available player' : `Show only ${p}s. You have ${have}, a typical roster carries about ${need}.`}">${p}${p !== 'ALL' ? ` <span class="${have >= need ? 'good' : have ? 'warn' : 'dim'}" style="font-size:11px">${have}/${need}</span>` : ''}</button>`; }).join('')}
     <input id="fdSearch" placeholder="Search name…" value="${esc(fdQ)}" style="margin-left:auto;min-width:180px" title="Type a player's name and press Enter"></div>
     <div class="tiny muted" style="margin-top:6px">${f.pool.length}${f.pool.length >= 300 ? '+' : ''} available${fdPos !== 'ALL' ? ` at ${fdPos}` : ''}${fdQ ? ` matching "${esc(fdQ)}"` : ''}. The numbers show how many you have vs. how many a team usually carries.</div></div>
   <div class="grid g21"><div>${table({ id: 'fd', sort: { k: 'ovr', dir: 'desc' }, rows: f.pool, cols: [{ k: 'name', l: 'Player', f: (p) => pname(p, { sub: p.pos }) }, { k: 'pos', l: 'Pos' }, { k: 'age', l: 'Age', num: true }, { k: 'ovr', l: 'OVR', num: true, f: (p) => ovr(p.ovr) }, { k: 'pot', l: 'Pot' }, { k: 'c', l: 'Contract', f: (p) => contractTxt(p.contract), sortv: (p) => p.contract?.apy || 0 }, { k: 'x', l: '', nosort: true, f: (p) => (f.mineOnClock ? `<button class="btn sm pri" data-act="fdPick" data-pid="${esc(p.pid)}">Draft</button>` : '') }] })}</div>
@@ -144,6 +176,8 @@ PAGES2.fantasy = async () => {
   <div class="card"><h2>Recent picks</h2>${f.log.slice(0, 30).map((l) => `<div class="small">R${l.r} ${esc(l.abbr)}: ${esc(l.name)} (${l.pos} ${l.ovr})</div>`).join('')}</div></div></div>`;
 };
 ACTIONS.fdPos = (el) => { fdPos = el.value; rerender(); };
+ACTIONS.fdView = (el) => { fdView = el.dataset.v; fdBlock = null; rerender(); };
+ACTIONS.fdBlock = (el) => { fdBlock = +el.dataset.b; rerender(); };
 ACTIONS.fdTab = (el) => { fdPos = el.dataset.p; rerender(); };
 document.addEventListener('keydown', (e) => { if (e.target?.id === 'fdSearch' && e.key === 'Enter') { fdQ = e.target.value; rerender(); } });
 document.addEventListener('input', (e) => { if (e.target?.id === 'fdSearch' && !e.target.value && fdQ) { fdQ = ''; rerender(); } });

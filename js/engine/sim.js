@@ -1,6 +1,7 @@
 // Play-by-play game simulation. Produces box scores, player stats, injuries.
 import { G, rnd, gauss, clamp, chance, wpick, interp, pick } from './core.js';
 import { injuryTypeFor } from './injuries.js';
+import { OFF_SCHEMES, DEF_SCHEMES, teamScheme, teamFit, resolveRoles } from './schemes.js';
 
 const OFF_SLOTS = { QB: 1, RB: 2, WR: 4, TE: 2, OT: 2, OG: 2, C: 1, FB: 1 };
 const DEF_SLOTS = { EDGE: 3, DT: 3, LB: 3, CB: 4, S: 2 };
@@ -8,7 +9,7 @@ const DEF_SLOTS = { EDGE: 3, DT: 3, LB: 3, CB: 4, S: 2 };
 // NFL parity: the gap between a great and an average player matters, but less than raw ratings
 // suggest (scheme, play-calling, health and luck even things out). Attributes are pulled toward the
 // league average for that position before they hit the play engine.
-const PARITY = 0.82;
+const PARITY = 0.86;
 let MEAN = { key: null, m: {} };
 function attrMeans() {
   const Lg = G.L;
@@ -58,10 +59,40 @@ function buildUnit(tid, ctx) {
     EDGE: take('EDGE', 3, ['DT', 'LB']), DT: take('DT', 3, ['EDGE']), LB: take('LB', 3, ['S', 'EDGE']), CB: take('CB', 4, ['S']), S: take('S', 2, ['CB', 'LB']),
     K: take('K', 1, ['P']), P: take('P', 1, ['K']),
   };
+  // scheme + situational roles (slot WR, nickel CB, Mike/Will/Sam, specialists)
+  const sch = teamScheme(t);
+  u.so = OFF_SCHEMES[sch.off]; u.sd = DEF_SCHEMES[sch.def];
+  const R = resolveRoles(t, (p) => avail(p.pid) || used.has(p.pid));
+  const addTo = (arr, p) => { if (p && !arr.includes(p)) { arr.push(p); used.add(p.pid); } return p; };
+  // receivers: two outside (depth order without the slot man) plus the slot
+  u.wrRank = new Map((t.depth.WR || []).map((pid, i) => [pid, i]));
+  u.WR.forEach((p, i) => { if (!u.wrRank.has(p.pid)) u.wrRank.set(p.pid, 4 + i); });
+  const slot = R.SLOT && (u.WR.includes(R.SLOT) || avail(R.SLOT.pid)) ? addTo(u.WR, R.SLOT) : u.WR[2];
+  const out = u.WR.filter((p) => p !== slot);
+  u.WR = slot ? [out[0], out[1], slot, ...out.slice(2)].filter(Boolean) : out;
+  u.SLOT = slot || null;
+  u.RB3D = R.RB3D && (u.RB.includes(R.RB3D) || avail(R.RB3D.pid)) ? addTo(u.RB, R.RB3D) : u.RB[0];
+  u.PWRB = R.PWRB && (u.RB.includes(R.PWRB) || avail(R.PWRB.pid)) ? addTo(u.RB, R.PWRB) : u.RB[0];
+  u.RZ = R.RZ && [...u.WR, ...u.TE, ...u.RB].includes(R.RZ) ? R.RZ : null;
+  // linebackers ordered Mike, Will, Sam so every "top two linebackers" use means Mike + Will
+  const lbs = [R.MIKE, R.WILL, R.SAM].filter((p) => p && (u.LB.includes(p) || avail(p.pid) || u.S.includes(p)));
+  for (const p of lbs) if (!u.LB.includes(p) && !u.S.includes(p)) used.add(p.pid);
+  u.LB = [...lbs, ...u.LB.filter((p) => !lbs.includes(p))];
+  // corners ordered outside, outside, nickel, dime
+  const nk = R.NICKEL && (u.CB.includes(R.NICKEL) || u.S.includes(R.NICKEL) || avail(R.NICKEL.pid)) ? R.NICKEL : null;
+  if (nk && !u.CB.includes(nk) && !u.S.includes(nk)) used.add(nk.pid);
+  const cbOut = u.CB.filter((p) => p !== nk);
+  u.CB = nk ? [cbOut[0], cbOut[1], nk, ...cbOut.slice(2)].filter(Boolean) : cbOut;
+  u.NICKEL = nk || u.CB[2] || null;
+  const dm = R.DIME && R.DIME !== u.NICKEL && (avail(R.DIME.pid) || u.CB.includes(R.DIME) || u.S.includes(R.DIME)) ? R.DIME : (u.CB[3] || null);
+  if (dm && !u.CB.includes(dm) && !u.S.includes(dm)) used.add(dm.pid);
+  u.DIME = dm;
+  u.RUSH = R.RUSH && (avail(R.RUSH.pid) || u.EDGE.includes(R.RUSH) || u.DT.includes(R.RUSH) || u.LB.includes(R.RUSH)) ? R.RUSH : null;
+  if (u.RUSH) used.add(u.RUSH.pid);
   u.KR = (t.depth.KR || []).map((pid) => Lg.players[pid]).find((p) => p && used.has(p.pid) === false && avail(p.pid)) || u.WR[3] || u.RB[1] || u.CB[3] || u.WR[0];
   const all = [];
-  for (const k of ['QB', 'RB', 'WR', 'TE', 'OT', 'OG', 'C', 'EDGE', 'DT', 'LB', 'CB', 'S', 'K', 'P']) for (const p of u[k]) all.push(p);
-  if (u.KR && !all.includes(u.KR)) all.push(u.KR);
+  for (const k of ['QB', 'RB', 'WR', 'TE', 'OT', 'OG', 'C', 'EDGE', 'DT', 'LB', 'CB', 'S', 'K', 'P']) for (const p of u[k]) if (!all.includes(p)) all.push(p);
+  for (const p of [u.KR, u.DIME, u.RUSH]) if (p && !all.includes(p)) all.push(p);
   const chemB = ((t.chem ?? 0.6) - 0.6) * 4 * (Lg.settings.sliders.moraleImpact ?? 1);
   for (const p of all) {
     const mor = ((p.morale ?? 65) - 65) / 30 * (Lg.settings.sliders.moraleImpact ?? 1);
@@ -72,6 +103,11 @@ function buildUnit(tid, ctx) {
   const C = Lg.coaches || {};
   u.ocB = ((C[st.oc]?.off ?? 70) - 70) / 10 + ((C[st.hc]?.off ?? 70) - 70) / 20;
   u.dcB = ((C[st.dc]?.def ?? 70) - 70) / 10 + ((C[st.hc]?.def ?? 70) - 70) / 20;
+  // scheme fit: starters who suit the system help, and a coordinator running his own system calls it better
+  const fo = teamFit(t, 'off', sch.off).pct, fd = teamFit(t, 'def', sch.def).pct;
+  u.fitO = fo; u.fitD = fd;
+  u.ocB += (fo - 50) / 50 * 0.55 + (sch.off === sch.ocScheme ? 0.25 : -0.25);
+  u.dcB += (fd - 50) / 50 * 0.55 + (sch.def === sch.dcScheme ? 0.25 : -0.25) + (u.sd.dcBonus || 0) * ((C[st.dc]?.def ?? 70) - 70) / 10;
   u.gm = (C[st.hc]?.gm ?? 70);
   u.agg = (C[st.hc]?.agg ?? 0.5);
   // team identity: a great QB and receivers tilt toward throwing; a great back and a mauling line tilt toward running
@@ -80,7 +116,7 @@ function buildUnit(tid, ctx) {
   const rbk = [...u.OT, ...u.OG, ...u.C].reduce((a, p) => a + (p.r.a.rbk ?? 70), 0) / Math.max(1, u.OT.length + u.OG.length + u.C.length);
   const pbk = [...u.OT, ...u.OG, ...u.C].reduce((a, p) => a + (p.r.a.pbk ?? 70), 0) / Math.max(1, u.OT.length + u.OG.length + u.C.length);
   const rosterLean = clamp(0.5 + (qbO - 80) / 40 + (wrO - rbO) / 80 + (pbk - rbk) / 80, 0.15, 0.85);
-  u.passLean = 0.45 * (C[st.oc]?.passLean ?? 0.5) + 0.55 * rosterLean;
+  u.passLean = 0.45 * (C[st.oc]?.passLean ?? 0.5) + 0.55 * rosterLean + u.so.pass;
   u.all = all;
   rateUnit(u);
   return u;
@@ -96,12 +132,28 @@ function rateUnit(u) {
     pbk: a([...u.OT, ...u.OG, ...u.C], 'pbk') * 0.85 + a(u.TE.slice(0, 1), 'pbk') * 0.05 + a(u.RB.slice(0, 1), 'pbk') * 0.1,
     rbk: a([...u.OT, ...u.OG, ...u.C], 'rbk') * 0.8 + a(u.TE.slice(0, 1), 'rbk') * 0.2,
     rush: a(u.EDGE.slice(0, 2), 'prs') * 0.62 + a(u.DT.slice(0, 2), 'prs') * 0.32 + a(u.LB.slice(0, 1), 'prs') * 0.06,
+    baseRun: u.sd?.front === '34' ? a(u.DT.slice(2, 3), 'bsh') : a(u.LB.slice(2, 3), 'bsh'),
     runD: a(u.DT.slice(0, 2), 'bsh') * 0.4 + a(u.EDGE.slice(0, 2), 'bsh') * 0.25 + a(u.LB.slice(0, 2), 'bsh') * 0.2 + a(u.LB.slice(0, 2), 'tak') * 0.15,
     tackle: a([...u.LB.slice(0, 2), ...u.S, ...u.CB.slice(0, 2)], 'tak') * 0.5 + a([...u.LB.slice(0, 2), ...u.S], 'pur') * 0.5,
     cover: a(u.CB.slice(0, 3), 'mcv') * 0.45 + a(u.CB.slice(0, 3), 'zcv') * 0.2 + a(u.S, 'zcv') * 0.25 + a(u.LB.slice(0, 2), 'zcv') * 0.1,
   };
+  // passing downs: same formula with the pass-rush specialist in for the weakest starter
+  const sub = rushers(u, true), sE = [], sD = [];
+  sub.forEach((p, i) => (i < 2 ? sE : sD).push(p));
+  u.r.rushSub = Math.max(u.r.rush, a(sE, 'prs') * 0.62 + a(sD, 'prs') * 0.32 + a(u.LB.slice(0, 1), 'prs') * 0.06);
 }
 
+// passing-down rush unit: the pass-rush specialist replaces the weakest of the four starting rushers
+function rushers(d, sub) {
+  const r = [...d.EDGE.slice(0, 2), ...d.DT.slice(0, 2)];
+  if (sub && d.RUSH && !r.includes(d.RUSH)) {
+    let wi = 0; r.forEach((p, i) => { if ((p.r.a.prs ?? 50) < (r[wi].r.a.prs ?? 50)) wi = i; });
+    if ((d.RUSH.r.a.prs ?? 0) > (r[wi]?.r.a.prs ?? 0)) r[wi] = d.RUSH;
+  }
+  return r;
+}
+
+const rushersFor = (d, passDown) => rushers(d, passDown);
 function newLine() { return {}; }
 function inc(box, p, k, v = 1) { if (!p) return; const l = (box.pl[p.pid] ||= newLine()); l[k] = (l[k] || 0) + v; }
 
@@ -120,7 +172,7 @@ export function simGame(game, opts = {}) {
   const upset = sl.upsetFactor ?? 1;
   // game-day form: each team has a small random form swing (any-given-Sunday)
   const sf = (tid) => (G.L.teams[tid]?.sf || 0);
-  const form = [gauss(0, 3.2 * upset) + homeAdv / 2 + sf(game.h), gauss(0, 3.2 * upset) - homeAdv / 2 + sf(game.a)];
+  const form = [gauss(0, 2.4 * upset) + homeAdv / 2 + sf(game.h), gauss(0, 2.4 * upset) - homeAdv / 2 + sf(game.a)];
   const scoringAdj = (sl.scoring ?? 1);
 
   const coin = chance(0.5) ? 0 : 1; // team that receives first
@@ -343,31 +395,50 @@ export function simGame(game, opts = {}) {
     return { name: k[0], side: k[1], yds, auto1: k[1] === 'def' && k[0] !== 'Offside' };
   }
 
+  // personnel for this snap: the offense picks 3-WR (11) or heavier sets by scheme and situation; the defense answers
+  // with base, nickel (slot corner in) or dime (sixth DB for the Will linebacker)
+  function personnel() {
+    const o = O(), d = D();
+    const passDown = (S.down === 3 && S.dist >= 4) || (S.down === 2 && S.dist >= 9) || hurry();
+    const o3 = chance(clamp(o.so.wr3 + (passDown ? 0.25 : 0) - (S.dist <= 1 || S.yl >= 97 ? 0.35 : 0), 0.08, 0.98));
+    let dp;
+    if (o3) dp = ((S.down === 3 && S.dist >= 7) || (hurry() && S.dist >= 5)) && d.DIME ? 'dime' : 'nickel';
+    else dp = chance(d.sd.nickel * (passDown ? 1.25 : 0.7)) ? 'nickel' : 'base';
+    return { o3, dp, passDown };
+  }
+  const LBN = { base: 3, nickel: 2, dime: 1 };
+
   function runPlay() {
     const o = O(), d = D();
+    const pk = personnel();
     const qb = o.QB[0];
     tb(S.off).plays++; tb(S.off).car++;
     S.plays++;
     let carrier;
     const mobQ = o.r.qbMob;
-    const qbRunP = clamp(0.04 + (mobQ - 72) / 220, 0.01, 0.2);
+    const qbRunP = clamp((0.04 + (mobQ - 72) / 220) * o.so.qbRun, 0.01, 0.26);
     const sneak = S.dist <= 1 && S.down >= 3;
     if (sneak && qb && chance(0.45)) carrier = qb;
     else if (qb && chance(qbRunP)) carrier = qb;
+    else if (S.dist <= 2 && (S.down >= 3 || S.yl >= 96) && o.PWRB && chance(0.7)) carrier = o.PWRB;
+    else if (pk.passDown && S.down === 3 && o.RB3D && chance(0.75)) carrier = o.RB3D;
     else carrier = chance(0.66) ? o.RB[0] : (o.RB[1] || o.RB[0]);
     if (!carrier) carrier = o.RB[0] || qb;
     if (!carrier) { carrier = o.WR[0]; }
-    const blockD = ((o.r.rbk - d.r.runD) / 12.5) + (form[S.off] - form[1 - S.off]) * 0.18 + (o.ocB - d.dcB) * 0.25;
-    const carQ = carrier ? (eff(carrier, 'vis') * 0.3 + eff(carrier, 'btk') * 0.25 + eff(carrier, 'elu') * 0.2 + eff(carrier, 'spd') * 0.25 - 76) / 10 : -1;
+    // box count: heavy offensive sets add a blocker; base defenses add a run defender, dime takes one away
+    const boxAdj = (pk.o3 ? 0 : 0.3) + (pk.dp === 'base' ? -0.3 - (d.r.baseRun - 70) / 40 : pk.dp === 'dime' ? 0.45 : 0) - d.sd.run * 0.5;
+    const blockD = ((o.r.rbk - d.r.runD) / 12.5) + (form[S.off] - form[1 - S.off]) * 0.18 + (o.ocB - d.dcB) * 0.25 + boxAdj;
+    const RW = o.so.run === 'zone' ? [0.4, 0.15, 0.15, 0.3] : o.so.run === 'gap' ? [0.2, 0.4, 0.15, 0.25] : [0.3, 0.25, 0.2, 0.25];
+    const carQ = carrier ? (eff(carrier, 'vis') * RW[0] + eff(carrier, 'btk') * RW[1] + eff(carrier, 'elu') * RW[2] + eff(carrier, 'spd') * RW[3] - 76) / 10 : -1;
     let y;
     if (sneak && carrier === qb) {
-      const pr = rules.tushPush ? 0.86 : 0.7;
+      const pr = (rules.tushPush ? 0.86 : 0.7) + (o.so.shortYd || 0);
       y = chance(pr + blockD * 0.02) ? Math.max(S.dist, Math.round(rnd() * 2)) : 0;
     } else {
-      const stuff = clamp(0.175 - 0.028 * blockD - 0.012 * carQ, 0.06, 0.35);
+      const stuff = clamp(0.175 - 0.028 * blockD - 0.012 * carQ - (S.dist <= 2 ? (o.so.shortYd || 0) : 0), 0.06, 0.35);
       if (chance(stuff)) y = -Math.round(rnd() * 3);
       else {
-        const mean = 4.88 + 0.42 * blockD + 0.32 * carQ + (scoringAdj - 1) * 3;
+        const mean = 4.78 + 0.42 * blockD + 0.32 * carQ + (scoringAdj - 1) * 3;
         y = Math.max(0, Math.round(Math.exp(gauss(Math.log(Math.max(1.5, mean - 0.6)), 0.62))));
         if (chance(clamp(0.028 + 0.008 * carQ + 0.006 * blockD, 0.008, 0.07))) y += Math.round(10 + rnd() * 45);
       }
@@ -384,10 +455,15 @@ export function simGame(game, opts = {}) {
     const blockers = [...o.OT, ...o.OG, ...o.C];
     for (const b of blockers) { inc(box, b, 'rbSn'); if (gain >= 4) inc(box, b, 'rbGood'); }
     if (gain < 2 || chance(0.5)) {
-      const tk = wpick([...d.DT.slice(0, 2), ...d.EDGE.slice(0, 2), ...d.LB.slice(0, 2), ...d.S, ...d.CB.slice(0, 2)],
-        [...d.DT.slice(0, 2).map(() => 1.0), ...d.EDGE.slice(0, 2).map(() => 0.9), ...d.LB.slice(0, 2).map(() => 2.2), ...d.S.map(() => 0.8), ...d.CB.slice(0, 2).map(() => 0.5)]);
+      const lbs = d.LB.slice(0, LBN[pk.dp]);
+      const tk = wpick([...d.DT.slice(0, 2), ...d.EDGE.slice(0, 2), ...lbs, ...d.S, ...d.CB.slice(0, 2)],
+        [...d.DT.slice(0, 2).map(() => 1.0), ...d.EDGE.slice(0, 2).map(() => 0.9), ...lbs.map((p, i) => (i === 0 ? 2.5 : i === 1 ? 2.1 : 1.5)), ...d.S.map(() => 0.8), ...d.CB.slice(0, 2).map(() => 0.5)]);
       credTackle(tk, gain <= 0);
-    } else credTackle(wpick([...d.LB.slice(0, 2), ...d.S, ...d.CB.slice(0, 3)], [2, 2, 1.4, 1.4, 0.9, 0.9, 0.6]), false);
+    } else {
+      const lbs = d.LB.slice(0, LBN[pk.dp]), dbs = [...d.CB.slice(0, pk.dp === 'base' ? 2 : 3), ...(pk.dp === 'dime' && d.DIME ? [d.DIME] : [])];
+      const pool = [...lbs, ...d.S, ...dbs];
+      credTackle(wpick(pool, [...lbs.map((p, i) => (i === 0 ? 2.2 : 1.9)), ...d.S.map(() => 1.4), ...dbs.map((p, i) => (i < 2 ? 0.9 : 0.6))]), false);
+    }
     if (gain >= 10) missedTackle(d);
     if (S.yl + gain < 100 && S.yl + gain > 0 && chance(fumP)) {
       inc(box, carrier, 'fum');
@@ -416,20 +492,22 @@ export function simGame(game, opts = {}) {
     if (!qb) return runPlay();
     tb(S.off).plays++;
     S.plays++;
+    const pk = personnel();
     const fm = (form[S.off] - form[1 - S.off]) * 0.2 + (o.ocB - d.dcB) * 0.3;
-    const prDiff = (d.r.rush - o.r.pbk) / 12.5 - fm * 0.3;
-    const pressureP = clamp(0.3 + 0.055 * prDiff, 0.12, 0.55);
+    const prDiff = ((pk.passDown ? d.r.rushSub : d.r.rush) - o.r.pbk) / 12.5 - fm * 0.3;
+    const blitz = d.sd.blitz * (pk.passDown ? 1.3 : 1);
+    const pressureP = clamp(0.3 + 0.055 * prDiff + blitz, 0.12, 0.58);
     const pressured = chance(pressureP);
     const ol = [...o.OT, ...o.OG, ...o.C];
     for (const b of ol) inc(box, b, 'pbSn');
     let rusher = null;
     if (pressured) {
-      const rushers = [...d.EDGE.slice(0, 2), ...d.DT.slice(0, 2), ...d.LB.slice(0, 1)];
-      rusher = wpick(rushers, rushers.map((p) => Math.pow(Math.max(20, eff(p, 'prs')) / 70, 1.6) * (d.EDGE.includes(p) ? 1.45 : d.DT.includes(p) ? 0.95 : 0.4)));
+      const rushers = [...rushersFor(d, pk.passDown), ...d.LB.slice(0, 1)];
+      rusher = wpick(rushers, rushers.map((p) => Math.pow(Math.max(20, eff(p, 'prs')) / 70, 1.6) * (d.EDGE.includes(p) || p === d.RUSH ? 1.45 : d.DT.includes(p) ? 0.95 : 0.4)));
       inc(box, rusher, 'prss');
       const beaten = wpick(ol, ol.map((p) => Math.pow(Math.max(5, 105 - eff(p, 'pbk')) / 30, 2)));
       inc(box, beaten, 'prA');
-      const sackP = clamp(0.205 + 0.03 * prDiff - (o.r.qbPoc - 75) / 330 - (o.r.qbMob - 72) / 500, 0.08, 0.38);
+      const sackP = clamp(0.205 + 0.03 * prDiff - (o.r.qbPoc - 75) / 330 - (o.r.qbMob - 72) / 500 + (o.so.sack || 0), 0.08, 0.4);
       if (chance(sackP)) {
         const yds = Math.round(clamp(gauss(7, 2.5), 1, 15));
         inc(box, qb, 'sk'); inc(box, qb, 'skyd', yds); inc(box, rusher, 'sck'); inc(box, beaten, 'skA');
@@ -457,26 +535,53 @@ export function simGame(game, opts = {}) {
       }
     }
     // target selection
+    // who's on the field: two outside receivers plus the slot in 3-WR sets; the top two (by depth) otherwise.
+    // Target share follows how good a receiver is (his depth rank), not where he lines up.
+    const SH = [0.205, 0.17, 0.13, 0.07, 0.045];
+    const rk = (p) => SH[Math.min(4, o.wrRank.get(p.pid) ?? 4)];
+    const wrs = pk.o3 ? o.WR.slice(0, 3) : [...o.WR].sort((a, b) => (o.wrRank.get(a.pid) ?? 9) - (o.wrRank.get(b.pid) ?? 9)).slice(0, 2);
+    const back = pk.passDown && S.down === 3 ? (o.RB3D || o.RB[0]) : o.RB[0];
+    const back2 = o.RB.find((p) => p !== back);
+    const role = [...wrs.map((p) => [p, rk(p) * (p === o.SLOT && pk.o3 ? o.so.share.slot : 1)]),
+      [o.TE[0], 0.16 * o.so.share.te], [back, 0.12 * o.so.share.rb], [back2, 0.04 * o.so.share.rb],
+      [pk.o3 ? o.WR[3] : null, 0.045 * o.so.share.wr4], [o.TE[1], pk.o3 ? 0.045 : 0.11]];
     const tgts = [], w = [];
-    const role = [[o.WR[0], 0.205], [o.WR[1], 0.17], [o.WR[2], 0.13], [o.TE[0], 0.16], [o.RB[0], 0.12], [o.RB[1], 0.04], [o.WR[3], 0.045], [o.TE[1], 0.045]];
-    for (const [p, sh] of role) { if (!p) continue; tgts.push(p); w.push(sh * Math.exp(clamp(((eff(p, 'rte') + eff(p, 'rel') + eff(p, 'cth')) / 3 - 74) / 30, -0.35, 0.4))); }
+    for (const [p, sh] of role) {
+      if (!p || tgts.includes(p)) continue;
+      tgts.push(p);
+      w.push(sh * (S.yl >= 80 && p === o.RZ ? 1.7 : 1) * Math.exp(clamp(((eff(p, 'rte') + eff(p, 'rel') + eff(p, 'cth')) / 3 - 74) / 30, -0.35, 0.4)));
+    }
     const tg = wpick(tgts, w);
     // depth of target
     const isRB = o.RB.includes(tg);
     const deepLean = (o.r.qbDeep - 76) / 220 + (tg && eff(tg, 'spd') > 92 ? 0.04 : 0);
-    let depth = isRB ? 'scr' : wpick(['scr', 'sh', 'md', 'dp'], [0.16, 0.47, 0.24 + deepLean / 2, 0.13 + deepLean]);
+    const DW = o.so.depth;
+    let depth = isRB ? 'scr' : wpick(['scr', 'sh', 'md', 'dp'], [0.16 * DW[0], 0.47 * DW[1], (0.24 + deepLean / 2) * DW[2], (0.13 + deepLean) * DW[3] * (blitz > 0.03 ? 1.1 : 1)]);
     if (S.dist >= 15 && depth === 'scr') depth = 'md';
     const airY = { scr: Math.round(gauss(-1.5, 1.5)), sh: Math.round(3 + rnd() * 5), md: Math.round(10 + rnd() * 7), dp: Math.round(20 + Math.abs(gauss(0, 8))) }[depth];
     // coverage defender
+    // outside receivers draw the outside corners, the slot draws the nickel (or a linebacker/safety if the defense
+    // stayed in base), backs and tight ends draw linebackers and safeties (a dime DB on passing downs)
     let cov;
-    if (tg === o.WR[0]) cov = d.CB[0]; else if (tg === o.WR[1]) cov = d.CB[1]; else if (tg === o.WR[2] || tg === o.WR[3]) cov = d.CB[2] || d.S[0];
-    else if (o.TE.includes(tg)) cov = chance(0.55) ? d.S[0] || d.LB[0] : d.LB[0] || d.S[1]; else cov = d.LB[chance(0.6) ? 0 : 1] || d.S[1];
+    const wi = wrs.indexOf(tg);
+    if (wi === 0) cov = d.CB[0];
+    else if (wi === 1) cov = d.CB[1];
+    else if (tg === o.SLOT || wi === 2) cov = pk.dp === 'base' ? (chance(0.55) ? d.S[1] || d.LB[1] : d.LB[2] || d.LB[1]) : d.NICKEL || d.CB[2];
+    else if (o.WR.includes(tg)) cov = pk.dp === 'dime' ? d.DIME : d.S[0];
+    else if (o.TE.includes(tg)) cov = pk.dp === 'dime' ? (chance(0.5) ? d.S[1] : d.DIME) : chance(0.55 / (d.sd.lbCov || 1)) ? d.S[0] || d.LB[0] : d.LB[0] || d.S[1];
+    else cov = pk.dp === 'dime' ? (chance(0.5) ? d.LB[0] : d.DIME) : d.LB[chance(0.6) ? 1 : 0] || d.S[1];
     if (!cov) cov = d.S[0] || d.CB[0];
+    // man-heavy defenses lean on man skills, zone defenses on zone instincts
+    const man = d.sd.man;
+    const covK = (p) => (depth === 'dp' || o.WR.includes(tg) ? eff(p, 'mcv') * (0.5 + 0.5 * man) + eff(p, 'zcv') * (0.5 - 0.5 * man) : eff(p, 'zcv') * (1 - man * 0.5) + eff(p, 'mcv') * man * 0.5);
     const sep = tg && cov ? ((eff(tg, 'rte') * 0.42 + eff(tg, 'rel') * 0.18 + eff(tg, 'spd') * (depth === 'dp' ? 0.4 : 0.25) + eff(tg, 'agi') * (depth === 'dp' ? 0 : 0.15))
-      - (eff(cov, depth === 'dp' || o.WR.includes(tg) ? 'mcv' : 'zcv') * 0.62 + eff(cov, 'spd') * (depth === 'dp' ? 0.38 : 0.2) + eff(cov, 'awr') * (depth === 'dp' ? 0 : 0.18))) / 10 : 0;
+      - (covK(cov) * 0.62 + eff(cov, 'spd') * (depth === 'dp' ? 0.38 : 0.2) + eff(cov, 'awr') * (depth === 'dp' ? 0 : 0.18))) / 10 : 0;
     const base = { scr: 0.84, sh: 0.765, md: 0.605, dp: 0.4 }[depth];
     let cp = base + 0.028 * sep + 0.03 * (o.r.qbAcc - 76) / 10 + 0.018 * ((eff(tg, 'cth') - 75) / 10) - (pressured ? 0.17 : 0) + fm * 0.02
-      - (d.r.cover - 74) / 10 * 0.012 + (scoringAdj - 1) * 0.15;
+      - (d.r.cover - 74) / 10 * 0.012 + (scoringAdj - 1) * 0.15
+      + (depth === 'dp' ? (d.sd.deep - 1) * 0.12 : depth === 'md' ? (d.sd.deep - 1) * 0.05 : (d.sd.shortC - 1) * 0.5)
+      + (S.down <= 2 && o.so.pa && (depth === 'md' || depth === 'dp') ? o.so.pa * (o.r.rbk > d.r.runD ? 1 : 0.5) : 0)
+      + (S.down === 3 ? (o.so.third || 0) : 0);
     cp = clamp(cp, 0.12, 0.93);
     inc(box, qb, 'att'); tb(S.off).att++;
     inc(box, tg, 'tgt'); inc(box, cov, 'tgtA');
@@ -489,7 +594,7 @@ export function simGame(game, opts = {}) {
       let yac;
       const ye = eff(tg, 'elu') * 0.35 + eff(tg, 'spd') * 0.35 + eff(tg, 'btk') * 0.3;
       const tk = d.r.tackle;
-      const yacMean = { scr: 5.2, sh: 3.6, md: 3.0, dp: 3.2 }[depth] + (ye - tk) / 10 * 0.55;
+      const yacMean = { scr: 5.2, sh: 3.6, md: 3.0, dp: 3.2 }[depth] + (ye - tk) / 10 * 0.55 + (o.so.yac || 0);
       yac = Math.max(0, Math.round(Math.exp(gauss(Math.log(Math.max(1, yacMean)), 0.72)) - 0.8));
       if (chance(clamp(0.016 + (ye - tk) / 1200, 0.005, 0.045))) yac += Math.round(10 + rnd() * 38);
       let yds = Math.max(-4, airY + yac);
@@ -515,7 +620,7 @@ export function simGame(game, opts = {}) {
       }
       advance(yds, oob ? (hurry() ? 7 : 22) : time, tg, 'pass', qb, cov);
     } else {
-      const intP = ({ scr: 0.006, sh: 0.016, md: 0.032, dp: 0.058 }[depth]) * Math.exp(-(o.r.qbDec - 76) / 16) * Math.exp(((cov ? eff(cov, 'hwk') : 70) - 75) / 28) * (pressured ? 1.55 : 1) * (sl.turnovers ?? 1) * 0.95;
+      const intP = ({ scr: 0.006, sh: 0.016, md: 0.032, dp: 0.058 }[depth]) * Math.exp(-(o.r.qbDec - 76) / 16) * Math.exp(((cov ? eff(cov, 'hwk') : 70) - 75) / 28) * (pressured ? 1.55 : 1) * (sl.turnovers ?? 1) * 0.92;
       if (chance(intP / (1 - cp))) {
         const picker = chance(0.55) ? cov : pick([...d.S, ...d.S, ...d.CB, ...d.LB.slice(0, 2)]);
         inc(box, qb, 'int'); inc(box, picker, 'dint'); tb(S.off).int++;

@@ -4,6 +4,7 @@ import { createLeague } from '../js/engine/league.js';
 import { simUntil } from '../js/engine/season.js';
 import { teamCap, capSeason, capHit } from '../js/engine/contracts.js';
 import { capFor, age } from '../js/engine/core.js';
+import { teamOvr } from '../js/engine/ratings.js';
 const data = JSON.parse(fs.readFileSync(new URL('../data/league.json', import.meta.url)));
 const L = createLeague(data, { start: process.argv[2] || 'current', userTeams: [], seed: +(process.argv[3] || 7) });
 const yrs = +(process.argv[4] || 6);
@@ -20,6 +21,8 @@ function report(label) {
   const rook = Object.values(L.players).filter((p) => p.draft?.y === L.meta.season && p.tid >= 0).sort((a, b) => b.r.ovr - a.r.ovr).slice(0, 3).map((p) => `${p.fn} ${p.ln} ${p.pos} ${p.r.ovr}`);
   { const worst = L.teams.map((t)=>({t, c: teamCap(t.tid, capSeason())})).sort((a,b)=>a.c.space-b.c.space)[0]; if (worst.c.space < -5e6) console.log('  WORST CAP', worst.t.abbr, (worst.c.space/1e6).toFixed(1), 'dead', (worst.c.dead/1e6).toFixed(1), JSON.stringify((worst.t.dead||[]).filter(d=>d.s===capSeason()).sort((a,b)=>b.amt-a.amt).slice(0,4).map(d=>[d.name,(d.amt/1e6).toFixed(1),d.trade?'T':''])), 'roll', worst.c.rollover/1e6, 'top hits', Object.values(L.players).filter(p=>p.tid===worst.t.tid).map(p=>[p.ln, capHit(p, capSeason())]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(x=>x[0]+' '+(x[1]/1e6).toFixed(1)).join(', ')); }
   console.log(`${label} s=${L.meta.season} ph=${L.meta.phase} | n=${act.length} 90+=${c(90)} 85+=${c(85)} 80+=${c(80)} 70+=${c(70)} mean=${(o.reduce((a,b)=>a+b,0)/o.length).toFixed(1)} | cap ${(capFor(capSeason())/1e6).toFixed(1)}M over=${over} minSpace=${(Math.min(...caps.map((c)=>c.space))/1e6).toFixed(1)}M | act ${Math.min(...sizes)}-${Math.max(...sizes)} ps ${Math.min(...ps)}-${Math.max(...ps)} | FA ${Object.values(L.players).filter(p=>p.tid===-1).length} RET ${Object.values(L.players).filter(p=>p.tid===-3).length} total ${Object.keys(L.players).length}`);
+  { const tv = L.teams.map((t) => [t.abbr, teamOvr(t.tid).ovr]).sort((a, b) => b[1] - a[1]); const q = act.map((p) => p.r.ovr).sort((a, b) => a - b); const ST = { QB: 1, WR: 3, OT: 2, EDGE: 2, CB: 3 }; const sm = {}; for (const pos in ST) { const a = []; for (const t of L.teams) (t.depth[pos] || []).slice(0, ST[pos]).forEach((pid) => a.push(L.players[pid]?.r.ovr ?? 0)); sm[pos] = (a.reduce((x, y) => x + y, 0) / a.length).toFixed(1); } console.log('   ph', L.meta.phase, 'starterMeans', JSON.stringify(sm));
+  console.log('   teamOVR', tv.slice(0, 3).map((x) => x.join(' ')).join(', '), '...', tv.slice(-3).map((x) => x.join(' ')).join(', '), '| player p10', q[Math.floor(q.length * 0.1)], 'p25', q[Math.floor(q.length * 0.25)], 'med', q[Math.floor(q.length * 0.5)]); }
   console.log('   top$', topApy.join(', '), '| QBs', qbs.join(', '), '| rookies', rook.join(', '));
 }
 report('start');

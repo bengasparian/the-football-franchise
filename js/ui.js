@@ -111,6 +111,7 @@ export const contractTxt = (c) => (!c ? '—' : c.ps ? `<span class="dim">PS ${m
 export function table({ cols, rows, key = null, sort = null, onRow = null, cls = '', id = '', empty = 'Nothing here.' }) {
   const tid = id || `t${Math.random().toString(36).slice(2, 8)}`;
   const state = (TABLES[tid] ||= { sort: sort?.k || null, dir: sort?.dir || 'desc', limit: 120 });
+  TBL_SRC[tid] = { cols, rows, key, sort, onRow, cls, id: tid, empty };
   let rs = [...rows];
   if (state.sort) {
     const c = cols.find((x) => x.k === state.sort);
@@ -124,9 +125,18 @@ export function table({ cols, rows, key = null, sort = null, onRow = null, cls =
   if (state.limit && rs.length > state.limit) rs = rs.slice(0, state.limit);
   const more = total > rs.length ? `<tr><td colspan="${cols.length}" class="c"><button class="btn sm" data-act="tblMore" data-tbl="${tid}" title="Show every row">Show all ${total}</button></td></tr>` : '';
   const body = rs.length ? rs.map((r) => `<tr class="${onRow ? 'click' : ''} ${r._cls || ''}" ${onRow ? `data-row="${esc(onRow(r))}"` : ''}>${cols.map((c) => `<td class="${c.num ? 'num' : ''} ${c.c ? 'c' : ''}">${c.f ? c.f(r) : esc(r[c.k] ?? '')}</td>`).join('')}</tr>`).join('') + more : `<tr><td colspan="${cols.length}" class="empty">${empty}</td></tr>`;
-  return `<div class="tbl-wrap ${cls}"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="tbl-wrap ${cls}" data-tblw="${tid}"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 export const TABLES = {};
+const TBL_SRC = {};
+// Sorting or expanding a table redraws just that table from the rows it already has: no trip to the engine.
+export function redrawTable(tid) {
+  const src = TBL_SRC[tid];
+  const el = document.querySelector(`[data-tblw="${tid}"]`);
+  if (!src || !el) return false;
+  el.outerHTML = table(src);
+  return true;
+}
 
 // ---------- modal / toast / busy
 export function modal(title, html, { narrow = false } = {}) {
@@ -213,4 +223,14 @@ export const setAccent = (c1, c2) => setTheme(c1, c2);
 export function injText(p) {
   if (!p.inj) return '';
   return `${esc(p.inj.type)} · ${esc(p.inj.out || '')}${p.inj.ret ? ` · <span class="muted">${esc(p.inj.ret)}</span>` : ''}`;
+}
+
+// ---------- depth chart slot names: the #2 tackle is the right tackle (a starter), not a backup
+const SLOT_NAMES = { QB: ['QB'], RB: ['HB'], FB: ['FB'], WR: ['WR1', 'WR2', 'WR3'], TE: ['TE'], OT: ['LT', 'RT'], OG: ['LG', 'RG'], C: ['C'],
+  EDGE: ['LE', 'RE'], DT: ['DT', 'DT'], LB: ['LB', 'LB'], CB: ['CB1', 'CB2', 'CB3'], S: ['FS', 'SS'], K: ['K'], P: ['P'], LS: ['LS'], KR: ['KR'], PR: ['PR'] };
+export const startersAt = (pos) => SLOT_NAMES[pos]?.length || 1;
+export function slotLabel(pos, i) {
+  const n = SLOT_NAMES[pos];
+  if (n && i < n.length) return n[i];
+  return `${pos}${i + 1}`;
 }

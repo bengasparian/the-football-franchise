@@ -624,17 +624,102 @@ if os.environ.get("DEBUG_NAMES"):
 inj_all = D["injuries"]
 inj = inj_all[inj_all.week == inj_all.week.max()] if len(inj_all) else inj_all
 # most recent listed injury for every player (IR players drop off the weekly report, so look back)
+# (type, last week listed, first week of that injury streak). "Resting" entries aren't injuries, so they're skipped.
 LAST_INJ = {}
 if len(inj_all):
     for _, i in inj_all.sort_values("week").iterrows():
         t = i.report_primary_injury if isinstance(i.report_primary_injury, str) else (i.practice_primary_injury if isinstance(i.practice_primary_injury, str) else None)
-        if t: LAST_INJ[i.gsis_id] = (t, int(i.week))
+        if not t or "not injury related" in t.lower(): continue
+        w = int(i.week)
+        prev = LAST_INJ.get(i.gsis_id)
+        start = prev[2] if prev and prev[0] == t and w - prev[1] <= 2 else w
+        LAST_INJ[i.gsis_id] = (t, w, start)
+# typical total time missed by injury type (weeks, counted from when he got hurt)
 def ir_outlook(t):
     t0 = (t or "").lower()
     if any(k in t0 for k in ("acl", "achilles", "torn", "rupture")): return {"wk": 99, "se": True}
-    if any(k in t0 for k in ("fracture", "broken", "fibula", "tibia", "lisfranc", "pectoral")): return {"wk": 7}
+    if any(k in t0 for k in ("fracture", "broken", "fibula", "tibia", "lisfranc", "pectoral")): return {"wk": 8}
     if any(k in t0 for k in ("knee", "hamstring", "ankle", "shoulder", "foot", "calf", "groin", "quad")): return {"wk": 5}
     return {"wk": 4}
+
+# the week being played right now (first week with an unplayed game)
+_sg = D["games"]; _sg = _sg[(_sg.season == SEASON) & (_sg.game_type == "REG")]
+CUR_WEEK = int(_sg[_sg.home_score.isna()].week.min()) if _sg.home_score.isna().any() else 18
+# each team's game dates, to turn an expected return date into the week he's back
+TEAM_DATES = {}
+for _, x in _sg.iterrows():
+    for side in ("home_team", "away_team"):
+        TEAM_DATES.setdefault(TEAM_FIX.get(x[side], x[side]), []).append((str(x.gameday), int(x.week)))
+for k in TEAM_DATES: TEAM_DATES[k].sort()
+def week_for_date(team, date):
+    for d, w in TEAM_DATES.get(team, []):
+        if d >= date: return w
+    return 99
+
+# Official expected return dates (ESPN's injury report). Best source when reachable; the estimate is the fallback.
+ESPN_RET = {}
+try:
+    req = urllib.request.Request("https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries", headers={"User-Agent": "Mozilla/5.0 the-football-franchise-data"})
+    with urllib.request.urlopen(req, timeout=40) as r:
+        ej = json.loads(r.read().decode())
+    for tb in ej.get("injuries", []):
+        for it in tb.get("injuries", []):
+            ath = it.get("athlete") or {}
+            nm = _norm(ath.get("displayName") or "")
+            det = it.get("details") or {}
+            com = " ".join(x for x in (it.get("shortComment"), it.get("longComment")) if isinstance(x, str))
+            rec = {"date": (det.get("returnDate") or "")[:10] or None, "status": it.get("status"), "type": det.get("type"), "com": com,
+                   "team": tb.get("displayName")}
+            m = _re.search(r"(?:until|before|by|in|for|around|return(?:ing)?(?: in| for)?)\s+Week\s+(\d{1,2})", com, _re.I)
+            if m: rec["cweek"] = int(m.group(1))
+            if _re.search(r"season-ending|out for the (?:rest of the )?season|remainder of the season", com, _re.I): rec["se"] = True
+            if nm: ESPN_RET[nm] = rec
+    print("espn injuries", len(ESPN_RET), "with return dates", sum(1 for v in ESPN_RET.values() if v["date"]), flush=True)
+except Exception as e:
+    print("espn injuries unavailable:", e, flush=True)
+
+# first week of each player's current reserve stint (IR / PUP), from the weekly rosters
+IR_START = {}
+_rw = D["roster_weekly"]
+_rw = _rw[_rw.season == SEASON] if "season" in _rw else _rw
+for gid_, grp in _rw.sort_values("week").groupby("gsis_id"):
+    st = list(zip(grp.week.astype(int), grp.status.astype(str)))
+    if not st or st[-1][1] != "RES": continue
+    start = st[-1][0]
+    for w_, s_ in reversed(st):
+        if s_ != "RES": break
+        start = w_
+    IR_START[gid_] = start
+
+def injury_status(gid, name, team, on_ir, default_type):
+    """Weeks still to miss from the current week, plus the week he got hurt (for the IR clock)."""
+    li = LAST_INJ.get(gid)
+    t = li[0] if li else default_type
+    placed = IR_START.get(gid) if on_ir else None  # first week on reserve
+    if placed is None: placed = li[1] if li else CUR_WEEK - 1
+    hurt = li[2] if li else placed - 1               # when the injury started
+    if on_ir and hurt > placed: hurt = placed - 1    # back on the report only because his practice window opened
+    hurt = max(0, min(hurt, placed))
+    out = {"type": t or "Undisclosed"}
+    if on_ir: out["ir"] = True; out["irw"] = placed
+    e = ESPN_RET.get(_norm(name))
+    if e and e.get("type") and out["type"] == "Undisclosed": out["type"] = e["type"]
+    if e and e.get("se"):
+        out.update({"wk": 99, "se": True}); out["src"] = "report"; return out
+    back = None
+    if e and e.get("date"): back = week_for_date(team, e["date"])
+    elif e and e.get("cweek"): back = e["cweek"]
+    if back is not None and back < 60:
+        out["wk"] = max(0, back - CUR_WEEK); out["src"] = "report"
+    else:
+        o = ir_outlook(t)
+        if o.get("se"): out.update({"wk": 99, "se": True}); return out
+        # recovery is counted from when he got hurt, not from today
+        out["wk"] = max(1, o["wk"] - max(0, CUR_WEEK - hurt))
+        out["src"] = "est"
+    if on_ir: out["wk"] = max(out["wk"], 4 - max(0, CUR_WEEK - placed - 1), 0)  # the 4-game IR minimum
+    return out
+
 INJ = {}
 for _, i in inj.iterrows():
     if i.report_status in ("Out", "Doubtful"):
@@ -720,12 +805,15 @@ for p in players:
         o["cmb"] = {k: v for k, v in CB[p["pfr"]].items() if v is not None}
     if gid in CON:
         o["k"] = CON[gid]
+    nm_full = f"{r.first_name} {r.last_name}"
     if gid in INJ and r.gstatus != "IR":
         o["inj"] = INJ[gid]
+        e = ESPN_RET.get(_norm(nm_full))
+        if e and e.get("date"):
+            w = week_for_date(fix_team(r.team), e["date"])
+            if w < 60: o["inj"]["wk"] = max(o["inj"]["wk"] if w > CUR_WEEK else 0, w - CUR_WEEK); o["inj"]["src"] = "report"
     if r.gstatus == "IR":
-        li = LAST_INJ.get(gid)
-        t = li[0] if li else "Undisclosed"
-        o["inj"] = {"type": t, "ir": True, **ir_outlook(t)}
+        o["inj"] = injury_status(gid, nm_full, fix_team(r.team), True, "Undisclosed")
     car = career(gid)
     if car:
         o["car"] = car

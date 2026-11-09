@@ -114,6 +114,39 @@ export function scoutProspect(tid, pid) {
   if (p.scout.err[tid] == null) p.scout.err[tid] = gauss(0, 1);
   return { ok: true, level: lvl + 1 };
 }
+// Auto scouting: the staff spends your points for you. Everyone projected to go around your picks gets a first look,
+// then the best fits at your biggest needs get scouted deeper.
+export function autoScout(tid) {
+  const Lg = G.L;
+  const t = Lg.teams[tid];
+  if (!(t.scoutPts > 0)) return 0;
+  const pool = prospects().filter((p) => p.scout?.rank != null).sort((a, b) => a.scout.rank - b.scout.rank).slice(0, 160);
+  if (!pool.length) return 0;
+  const need = teamNeeds(tid);
+  const maxNeed = Math.max(1, ...Object.values(need));
+  // where we pick: the first pick we own sets how high we look
+  const mine = Lg.picks.filter((k) => k.tid === tid && k.s === (Lg.draft?.s || Lg.meta.season + 1)).map((k) => (k.no || (k.rd - 1) * 32 + 16));
+  const first = mine.length ? Math.min(...mine) : 40;
+  const pri = (p) => {
+    const r = p.scout.rank;
+    const reach = r < first - 12 ? 0.35 : 1; // won't be there when we pick
+    return reach * (1 + 1.5 * (need[p.pos] || 0) / maxNeed) / (1 + Math.abs(r - first) / 25);
+  };
+  const ranked = pool.map((p) => ({ p, v: pri(p) })).sort((a, b) => b.v - a.v);
+  const goal = (i) => (i < 12 ? 3 : i < 35 ? 2 : 1);
+  let spent = 0;
+  for (let pass = 1; pass <= 3; pass++) {
+    for (let i = 0; i < ranked.length; i++) {
+      const p = ranked[i].p;
+      const lvl = p.scout.lvl[tid] || 0;
+      if (lvl >= pass || goal(i) < pass) continue;
+      const cost = SCOUT_COST[lvl + 1];
+      if (t.scoutPts < cost) continue;
+      if (scoutProspect(tid, p.pid).ok) spent += cost;
+    }
+  }
+  return spent;
+}
 export function scoutedView(p, tid) {
   const lvl = p.scout?.lvl?.[tid] || 0;
   const err = p.scout?.err?.[tid] ?? 0;
@@ -205,7 +238,7 @@ export function simDraftRound() {
   return { picks: k };
 }
 
-function teamNeeds(tid) {
+export function teamNeeds(tid) {
   const Lg = G.L;
   const ps = Object.values(Lg.players).filter((p) => p.tid === tid && p.status !== 'PS');
   const target = { QB: [1, 82], RB: [1, 76], WR: [3, 78], TE: [1, 76], OT: [2, 78], OG: [2, 76], C: [1, 75], EDGE: [2, 80], DT: [2, 78], LB: [2, 76], CB: [3, 78], S: [2, 76], K: [1, 70], P: [1, 68], LS: [1, 60], FB: [0, 0] };

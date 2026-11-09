@@ -33,12 +33,12 @@ export async function call(method, args = {}) {
 }
 
 // ---------------- online (PeerJS)
-const GUEST_OK = new Set(['header', 'dashboard', 'teams', 'roster', 'playerDetail', 'depth', 'setDepthChart', 'autoDepthChart', 'standings', 'schedule', 'game', 'playerStats',
+const GUEST_OK = new Set(['header', 'dashboard', 'teams', 'roster', 'playerDetail', 'depth', 'setDepthChart', 'autoDepthChart', 'lineupInfo', 'setScheme', 'setRole', 'setInjAuto', 'setAutoScout', 'standings', 'schedule', 'game', 'playerStats',
   'leaders', 'teamStats', 'newsFeed', 'capSheet', 'releaseP', 'restructureP', 'tagP', 'optionP', 'declineOption', 'irP', 'activateP', 'toPS', 'promoteP', 'autoCutdown', 'toggleBlock',
   'negotiateP', 'faList', 'withdrawOffer', 'signMin', 'signToPS', 'tradeAssets', 'tradeEval', 'tradePropose', 'tradeMakeItWork', 'tradeFind', 'tradeOffers', 'respondOffer',
   'draftBoard', 'scout', 'boardToggle', 'boardMove', 'draftState', 'draftPick', 'draftAuto', 'fantasyState', 'fantasyMakePick', 'fantasyAutoMine', 'staff', 'hire', 'fire',
   'finances', 'setPrices', 'rulesView', 'vote', 'propose', 'history', 'eventsList', 'eventResolve', 'settings', 'onlineTeams',
-  'recap', 'awardRace', 'nflHistory', 'negOptions', 'faLive', 'draftLive', 'franchiseOptions', 'relocate', 'rebrand']);
+  'recap', 'playoffBracket', 'awardRace', 'nflHistory', 'negOptions', 'faLive', 'draftLive', 'franchiseOptions', 'relocate', 'rebrand']);
 // Only the league creator (host) advances weeks, sims the draft or moves the league to the next phase.
 
 async function loadPeer() {

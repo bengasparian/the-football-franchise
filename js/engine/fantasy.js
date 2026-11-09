@@ -8,12 +8,16 @@ const POSV = { QB: 1.6, EDGE: 1.15, WR: 1.05, OT: 1.05, CB: 1.0, DT: 1.0, S: 0.8
 function room(tid) { const Lg = G.L; const used = Object.values(Lg.players).filter((p) => p.tid === tid).reduce((a, p) => a + (p.contract?.apy || 0), 0); const left = 53 - Object.values(Lg.players).filter((p) => p.tid === tid).length; return Math.max(2e6, capFor(Lg.meta.season) - used - left * 1.1e6); }
 const TEMPLATE = { QB: 3, RB: 4, WR: 6, TE: 3, OT: 4, OG: 4, C: 2, EDGE: 5, DT: 5, LB: 5, CB: 6, S: 4, K: 1, P: 1 }; // 53
 
-export function startFantasyDraft() {
+// slot: 'random' or 1-32 (where the first user team picks in round 1). The draft is always a snake.
+export function startFantasyDraft(slot = 'random') {
   const Lg = G.L;
   const pool = Object.values(Lg.players).filter((p) => p.tid >= 0 && p.status !== 'PROSPECT');
   for (const p of pool) { p.fantasyPool = true; p.tid = -4; p.status = 'FA'; }
   for (const t of Lg.teams) t.depth = {};
   const order = shuffle(Lg.teams.map((t) => t.tid));
+  const ut = Lg.meta.userTids[0];
+  const n = +slot;
+  if (ut != null && n >= 1 && n <= 32) { order.splice(order.indexOf(ut), 1); order.splice(n - 1, 0, ut); }
   Lg.fantasy = { order, round: 1, idx: 0, rounds: 53, log: [], done: false };
   news('Fantasy draft: every player in the league is up for grabs. Contracts stay with the players.', { type: 'system', big: true });
   return Lg.fantasy;
@@ -31,9 +35,16 @@ function needs(tid) {
   for (const pos in TEMPLATE) n[pos] = TEMPLATE[pos] - mine.filter((p) => p.pos === pos).length;
   return n;
 }
+const OFF = new Set(['QB', 'RB', 'FB', 'WR', 'TE', 'OT', 'OG', 'C']);
+const DEF = new Set(['EDGE', 'DT', 'LB', 'CB', 'S']);
+// Picks for CPU teams and for your auto/sim picks: talent first, but always building a real roster. Positions you
+// still need count for more, and a team that has leaned one way (too much offense) is pulled back toward the other side.
 function aiFantasyPick(tid) {
   const pool = fantasyPool();
   const nd = needs(tid);
+  const mine = Object.values(G.L.players).filter((p) => p.tid === tid);
+  const offN = mine.filter((p) => OFF.has(p.pos)).length, defN = mine.filter((p) => DEF.has(p.pos)).length;
+  const lean = offN - defN; // + = offense-heavy (the template is 26 offense / 25 defense)
   const roundsLeft = 54 - G.L.fantasy.round;
   const mustFill = Object.values(nd).reduce((a, b) => a + Math.max(0, b), 0) >= roundsLeft;
   let best = null, bv = -1e9;
@@ -42,7 +53,9 @@ function aiFantasyPick(tid) {
     const need = nd[p.pos] ?? 0;
     if (need <= 0 && (mustFill || p.pos === 'K' || p.pos === 'P' || p.pos === 'LS' || p.pos === 'FB')) continue;
     // fantasy GMs draft talent first; contract only matters at the margin (cap is enforced below)
-    let v = (600 * Math.exp((p.r.ovr * 0.75 + p.r.tal * 0.25 - 90) * 0.1)) * POSV[p.pos] * (age(p) <= 26 ? 1.1 : age(p) >= 31 ? 0.75 : 1) * (need > 0 ? 1 : 0.3);
+    const starterNeed = need > 0 ? 1 + 0.12 * Math.min(need, 3) : 0.3;
+    const side = OFF.has(p.pos) ? (lean >= 2 ? Math.pow(0.8, lean - 1) : 1) : DEF.has(p.pos) ? (lean <= -2 ? Math.pow(0.8, -lean - 1) : 1) : 1;
+    let v = (600 * Math.exp((p.r.ovr * 0.75 + p.r.tal * 0.25 - 90) * 0.1)) * POSV[p.pos] * (age(p) <= 26 ? 1.1 : age(p) >= 31 ? 0.75 : 1) * starterNeed * side;
     if ((p.pos === 'K' || p.pos === 'P') && G.L.fantasy.round < 30) v *= 0.1;
     if (p.pos === 'LS' && G.L.fantasy.round < 45) v *= 0.05;
     const apy = p.contract?.apy || 0;

@@ -2,7 +2,7 @@
 import { TRADED_PICKS } from './const.js';
 import { G, seedRng, rnd, gauss, clamp, age, nextId, rngState, news, capFor } from './core.js';
 import { CAP_2026, RULES_DEFAULT, DEFAULT_SLIDERS, TEAM_INFO, OWNERS, NO_TAX } from './const.js';
-import { genAttrs, initTalent, computeOvr, projectPeak, captureRefDist } from './ratings.js';
+import { genAttrs, initTalent, computeOvr, projectPeak, captureRefDist, setOvr, refreshTeamRef } from './ratings.js';
 import { initDevTraits, initLongevity, applyKnownPersonality } from './dev.js';
 import { genPersonality } from './personality.js';
 import { contractFromData, makeContract, minDeal, psDeal, rookieContract, marketValue, teamCap } from './contracts.js';
@@ -107,6 +107,14 @@ export function createLeague(data, opts) {
     L.meta.phase = start === 'preseason' ? 'PRESEASON' : 'REGULAR_SEASON';
     L.meta.week = start === 'preseason' ? 0 : 1;
   }
+  // Rating floor: real depth players and role guys sit around 70 (like Madden), so the bottom of the scale is lifted
+  // instead of falling off a cliff below the starters. Starters and stars (74+) are untouched.
+  for (const p of Object.values(L.players)) {
+    if (!(p.tid >= -1) || !p.r || ['K', 'P', 'LS'].includes(p.pos) || p.r.ovr >= 74) continue;
+    const to = clamp(Math.round(74 - (74 - p.r.ovr) * 0.72), 40, 73);
+    const d = to - p.r.ovr;
+    if (d > 0) { setOvr(p, to, false); p.r.tal = clamp((p.r.tal ?? to) + d, 25, 99); p.r.ovrStart = to; }
+  }
   // development traits, longevity and known personalities
   const rostered = Object.values(L.players).filter((p) => p.tid >= -1 && p.r);
   initDevTraits(rostered, S0);
@@ -131,13 +139,14 @@ export function createLeague(data, opts) {
   // expected wins (preseason projection) from roster strength
   setExpectations();
   captureRefDist();
-  for (const ut of L.meta.userTids) setOwnerGoals(L.teams[ut]);
+  refreshTeamRef(1); // fixes the league reference that team overalls are spread around
+  for (const ut of L.meta.userTids) { setOwnerGoals(L.teams[ut]); if (L.teams[ut].scoutPts == null) L.teams[ut].scoutPts = 60; }
   // draft class for next April, scouting during the season
   genDraftClass(S0 + 1);
   if (fantasy) {
     L.meta.fantasyFrom = L.meta.phase;
     L.meta.phase = 'FANTASY_DRAFT';
-    startFantasyDraft();
+    startFantasyDraft(opts.fantasySlot || 'random');
   }
   if (L.meta.phase === 'PRESEASON' || L.meta.fantasyFrom === 'PRESEASON') ensurePreseasonGames();
   news(`Welcome to THE Football Franchise. ${L.meta.userTids.map((t) => L.teams[t].region + ' ' + L.teams[t].name).join(', ') || 'You'} — the front office is yours.`, { type: 'system' });
@@ -227,9 +236,11 @@ function importRealSeasonStats(data, tidOf, S0) {
   for (const d of data.players) {
     const p = L.players[d.id];
     if (!p || !d.inj) continue;
-    p.inj = { type: d.inj.type, wk: d.inj.se ? 99 : d.inj.ir ? Math.max(2, (d.inj.wk || 5) + Math.round(rnd() * 3 - 1)) : d.inj.wk, s: S0, w: lastW, se: !!d.inj.se };
-    if (d.inj.ir) p.irWeek = Math.max(1, lastW - 1);
-    if (p.status === 'IR') p.irWeek = Math.max(1, lastW - 3);
+    // the data file already counts from the week he got hurt (and uses the official return date when there is one),
+    // so take it as-is
+    const exact = !!d.inj.src;
+    p.inj = { type: d.inj.type, wk: d.inj.se ? 99 : exact ? d.inj.wk : d.inj.ir ? Math.max(1, (d.inj.wk || 5) - 2) : d.inj.wk, s: S0, w: d.inj.irw ?? lastW, se: !!d.inj.se };
+    if (d.inj.ir || p.status === 'IR') p.irWeek = Math.max(1, d.inj.irw ?? lastW - 3);
   }
 }
 
@@ -249,7 +260,7 @@ export function setExpectations() {
   // hidden season-long variance the projections can't see: scheme fit, locker room, health luck, a QB
   // taking a leap or regressing. This is why some projected contenders flop and some sleepers break out.
   const up = L.settings?.sliders?.upsetFactor ?? 1;
-  for (const t of L.teams) t.sf = clamp(gauss(0, 2.1 * up), -5 * up, 5 * up);
+  for (const t of L.teams) t.sf = clamp(gauss(0, 1.3 * up), -3.5 * up, 3.5 * up);
 }
 export function rosterStrength(tid) {
   const L = G.L;

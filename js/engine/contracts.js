@@ -103,14 +103,19 @@ export function teamCap(tid, s = capSeason()) {
   const ps = Object.values(Lg.players).filter((p) => p.tid === tid);
   const offseason = ['SEASON_END', 'RESIGN', 'FREE_AGENCY', 'LEAGUE_MEETING', 'DRAFT', 'POST_DRAFT', 'TRAINING_CAMP', 'FANTASY_DRAFT'].includes(Lg.meta.phase);
   let hits = ps.map((p) => ({ p, h: p.status === 'PS' ? (p.contract?.ps || psSalary(p.exp, s)) : capHit(p, s) }));
+  // a future league year is counted the way the real cap sites do: only the top 51 contracts count (that's the
+  // offseason rule), the practice squad doesn't count yet, and this year's unused room is projected to roll over
+  const future = s > Lg.meta.season && !offseason;
   let used;
-  if (offseason) {
-    const sorted = hits.filter((x) => x.p.status !== 'PS').sort((a, b) => b.h - a.h);
+  if (offseason || future) {
+    const sorted = hits.filter((x) => x.p.status !== 'PS' && x.h > 0).sort((a, b) => b.h - a.h);
     used = sorted.slice(0, 51).reduce((a, x) => a + x.h, 0);
   } else used = hits.reduce((a, x) => a + x.h, 0);
   const dead = (t.dead || []).filter((d) => d.s === s).reduce((a, d) => a + d.amt, 0);
-  const cap = capFor(s) + (t.rollover?.[s] || 0);
-  return { cap, used: used + dead, dead, space: cap - used - dead, season: s, rollover: t.rollover?.[s] || 0 };
+  let roll = t.rollover?.[s] || 0;
+  if (future && s === Lg.meta.season + 1 && t.rollover?.[s] == null) roll = Math.max(0, Math.min(45e6, teamCap(tid, Lg.meta.season).space));
+  const cap = capFor(s) + roll;
+  return { cap, used: used + dead, dead, space: cap - used - dead, season: s, rollover: roll, projected: future };
 }
 export const capSpace = (tid, s) => teamCap(tid, s).space;
 
@@ -120,9 +125,8 @@ export function futureCommitments(tid, years = 5) {
   const out = [];
   for (let s = s0; s < s0 + years; s++) {
     const ps = Object.values(Lg.players).filter((p) => p.tid === tid && p.status !== 'PS');
-    const used = ps.reduce((a, p) => a + capHit(p, s), 0);
-    const dead = (Lg.teams[tid].dead || []).filter((d) => d.s === s).reduce((a, d) => a + d.amt, 0);
-    out.push({ s, cap: capFor(s), used: used + dead, dead, n: ps.filter((p) => capHit(p, s) > 0).length });
+    const c = teamCap(tid, s);
+    out.push({ s, cap: c.cap, used: c.used, dead: c.dead, rollover: c.rollover, n: ps.filter((p) => capHit(p, s) > 0).length });
   }
   return out;
 }

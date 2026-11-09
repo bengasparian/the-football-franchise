@@ -27,6 +27,7 @@ export function applyGameInjuries(box, game) {
     if (!p) continue;
     const wk = inj.se ? 99 : inj.wk;
     p.inj = { type: inj.type, wk: Math.max(wk, p.inj?.wk || 0), s: Lg.meta.season, w: Lg.meta.week, se: inj.se };
+    if (wk >= 1 || inj.se) benchInjured(p, wk, inj);
     (p.injHist ||= []).push({ s: Lg.meta.season, w: Lg.meta.week, type: inj.type, wk });
     longevityInjuryHit(p, wk, inj.se);
     if (wk >= 3 || inj.se) {
@@ -35,6 +36,55 @@ export function applyGameInjuries(box, game) {
     }
   }
   void game;
+}
+
+// ---------------------------------------------------------------- lineup around injuries
+// When a starter gets hurt we remember exactly where he played (depth spot + roles like slot WR or Mike LB).
+// "Auto" teams (every CPU team, and yours unless you switch it off) move the next man up right away; in "manual"
+// mode your depth chart is left alone and you get a heads-up to adjust it (the game still skips injured players).
+// Either way, when he's healthy again he goes straight back to his old spot.
+const isUserTid = (tid) => G.L.meta.userTids.includes(tid);
+export function injuryAuto(t) { return t.injAuto !== false || !!G.multiSim; } // multi-week sims are always hands-off
+function benchInjured(p, wk, inj) {
+  const Lg = G.L;
+  const t = Lg.teams[p.tid];
+  if (!t) return;
+  const list = t.depth[p.pos] || [];
+  const idx = list.indexOf(p.pid);
+  if (!p.slotMem && idx >= 0) {
+    const roles = Object.keys(t.roles || {}).filter((k) => t.roles[k] === p.pid);
+    p.slotMem = { tid: p.tid, pos: p.pos, idx, roles };
+  }
+  if (!isUserTid(p.tid)) return; // CPU staffs re-sort their depth chart every week anyway
+  const STARTERS = { QB: 1, RB: 1, WR: 3, TE: 1, OT: 2, OG: 2, C: 1, EDGE: 2, DT: 2, LB: 2, CB: 3, S: 2, K: 1, P: 1, LS: 1 };
+  const starter = idx >= 0 && idx < (STARTERS[p.pos] || 1);
+  if (injuryAuto(t)) {
+    if (idx >= 0) {
+      // next man up: he drops behind the healthy players at his position
+      const rest = list.filter((x) => x !== p.pid);
+      let at = rest.length;
+      for (let i = idx; i < rest.length; i++) { const q = Lg.players[rest[i]]; if (q && q.inj && q.inj.wk > 0) { at = i; break; } }
+      rest.splice(at, 0, p.pid);
+      t.depth[p.pos] = rest;
+    }
+    for (const k of p.slotMem?.roles || []) if (t.roles?.[k] === p.pid) delete t.roles[k]; // the staff picks a fill-in
+    if (starter) news(`${p.fn} ${p.ln} (${p.pos}) is hurt${inj.se ? ' for the season' : `, out about ${wk} week${wk > 1 ? 's' : ''}`}. Your staff moved the next man up; he'll go back into the lineup when he's healthy.`, { type: 'injury', tids: [p.tid], pids: [p.pid], user: true });
+  } else if (starter) {
+    news(`${p.fn} ${p.ln} (${p.pos}) is hurt${inj.se ? ' for the season' : `, out about ${wk} week${wk > 1 ? 's' : ''}`}. Your lineup is set to manual: adjust it on Adjust Lineup (the next healthy player fills in until you do).`, { type: 'injury', tids: [p.tid], pids: [p.pid], user: true });
+  }
+}
+export function restoreSlot(p) {
+  const Lg = G.L;
+  const m = p.slotMem;
+  if (!m) return;
+  delete p.slotMem;
+  if (m.tid !== p.tid || p.status !== 'ACT' || (p.inj && p.inj.wk > 0)) return;
+  const t = Lg.teams[p.tid];
+  const rest = (t.depth[m.pos] || []).filter((x) => x !== p.pid);
+  rest.splice(Math.min(m.idx, rest.length), 0, p.pid);
+  t.depth[m.pos] = rest;
+  for (const k of m.roles || []) (t.roles ||= {})[k] = p.pid;
+  if (isUserTid(p.tid)) news(`${p.fn} ${p.ln} is healthy and back in his old spot in your lineup.`, { type: 'injury', tids: [p.tid], pids: [p.pid], user: true });
 }
 
 // Called each week: heal, move long injuries to IR (AI), activate healed IR players
@@ -47,7 +97,7 @@ export function weeklyInjuryUpdate(aiManage) {
       if (p.status === 'IR') {
         const weeksOn = (Lg.meta.week - (p.irWeek ?? 0));
         if (weeksOn >= Lg.rules.irMinGames) { p.inj = null; p.healedOnIR = true; }
-      } else p.inj = null;
+      } else { p.inj = null; restoreSlot(p); }
     }
   }
   if (aiManage) aiManage();
@@ -74,6 +124,7 @@ export function activateFromIR(pid) {
   if (Lg.meta.phase === 'REGULAR_SEASON' && used >= Lg.rules.irReturns) return { error: `You have used all ${Lg.rules.irReturns} IR return designations this season.` };
   if (Lg.meta.phase === 'REGULAR_SEASON') t.irReturnsUsed[Lg.meta.season] = used + 1;
   p.status = 'ACT'; p.healedOnIR = false;
+  restoreSlot(p);
   transaction('ir', `${t.abbr} activated ${p.pos} ${p.fn} ${p.ln} from injured reserve`, { tids: [p.tid], pids: [pid] });
   return { ok: true };
 }

@@ -49,6 +49,12 @@ export function playerTradeValue(p, forTid, { selling = false } = {}) {
     v *= ctrl * clamp(1.4 - 0.45 * r, 0.55, 1.4);
     if (r > 1.35 && o < 86) v -= (avgSal - mv) / capFor(s) * 600 * Math.min(3, yrs.length); // bad contract: costs value to take on
   }
+  // recent high picks keep much of their draft-day value: teams don't dump a top-10 pick from last spring for a 3rd
+  const dr = p.draft;
+  if (dr && dr.r <= 2 && dr.p && s - dr.y <= 2 && p.r.ovr >= 62) {
+    const keep = [0.8, 0.62, 0.45][s - dr.y] * (p.r.ovr >= 72 ? 1 : 0.6);
+    v = Math.max(v, pickValue(dr.p) * keep);
+  }
   if (p.inj && p.inj.wk > 4) v *= p.inj.se ? 0.35 : 0.75;
   if (p.tradeReq && selling) v *= 0.8;
   if (p.holdout && selling) v *= 0.85;
@@ -131,7 +137,8 @@ export function packageValue(tid, players, picks, selling = false) {
       // what it costs us to lose him: a starter we can't replace hurts more for a contender
       const mode = teamMode(tid);
       if (mode === 'rebuild' && age(p) >= 28) pv *= 0.85; // sellers happily move veterans
-      if (mode === 'contend' && p.r.ovr >= nf.worstStarter) pv *= 1.15;
+      if (mode === 'contend' && p.r.ovr >= nf.worstStarter) pv *= 1.2;
+      else if (mode !== 'rebuild' && p.r.ovr >= nf.worstStarter + 4 && age(p) <= 27) pv *= 1.12; // young starters aren't for sale cheap
     }
     return pv;
   }).sort((a, b) => b - a);
@@ -238,16 +245,28 @@ export function tradeFinder(userTid, { give = { players: [], picks: [] }, want =
   const teams = want.players.length ? [Lg.players[want.players[0]].tid] : Lg.teams.map((t) => t.tid).filter((t) => !Lg.meta.userTids.includes(t));
   for (const tid of teams) {
     if (Lg.meta.userTids.includes(tid)) continue;
-    let offer;
-    if (want.players.length || want.picks.length) offer = balanceForTarget(userTid, tid, give, want);
-    else offer = buildOfferFor(userTid, tid, give, pos);
-    if (offer) {
+    const offers = [];
+    if (want.players.length || want.picks.length) offers.push(balanceForTarget(userTid, tid, give, want));
+    else if (pos === 'PICKS') offers.push(buildOfferFor(userTid, tid, give, null, { picksOnly: true }));
+    else if (!pos && !give.players.length && give.picks.length) {
+      // shopping only picks: teams answer with a player, or by trading down (more, later picks)
+      offers.push(buildOfferFor(userTid, tid, give, null, { playerFirst: true }));
+      offers.push(buildOfferFor(userTid, tid, give, null, { picksOnly: true, tradeDown: true }));
+    } else offers.push(buildOfferFor(userTid, tid, give, pos));
+    const seen = new Set();
+    for (const offer of offers) {
+      if (!offer) continue;
+      const k = JSON.stringify(offer.get);
+      if (seen.has(k)) continue;
+      seen.add(k);
       const ev = evaluateTrade(userTid, tid, offer.give, offer.get);
       if (ev.accept) results.push({ tid, ...offer, ev });
+      // they'd take it, but your roster is full: still show it so you can clear a spot first
+      else if (ev.err && /roster limit/.test(ev.err) && ev.err.startsWith(Lg.teams[userTid].abbr) && !ev.block && ev.valIn - ev.valOut >= ev.margin) results.push({ tid, ...offer, ev, needsSpot: ev.err });
     }
   }
   results.sort((a, b) => b.score - a.score);
-  return results.slice(0, maxResults);
+  return results.slice(0, give.picks.length && !pos ? Math.max(maxResults, 18) : maxResults);
 }
 
 function assetsOf(tid, excludePids = [], { minOvr = 0 } = {}) {
@@ -258,28 +277,47 @@ function assetsOf(tid, excludePids = [], { minOvr = 0 } = {}) {
 }
 
 // AI side gives value back for what user offers (optionally at a position)
-function buildOfferFor(userTid, aiTid, give, pos) {
+function buildOfferFor(userTid, aiTid, give, pos, opts = {}) {
   const Lg = G.L;
   const gp = give.players.map((id) => Lg.players[id]), gk = give.picks.map((id) => Lg.picks.find((x) => x.id === id));
   const valIn = packageValue(aiTid, gp, gk, false);
   if (valIn < 6) return null;
   const target = valIn * 0.9;
   const { ps, picks } = assetsOf(aiTid);
-  let pool = ps.filter((p) => (!pos || p.pos === pos) && !(p.pos === 'QB' && Lg.teams[aiTid].depth.QB?.[0] === p.pid));
   const s = capSeason();
-  let uroom = teamCap(userTid, s).space + gp.reduce((a, p) => a + capHit(p, s), 0);
-  pool = pool.filter((p) => baseOnly(p, s) <= uroom).map((p) => ({ p, v: packageValue(aiTid, [p], [], true) })).filter((x) => x.v <= target * 1.05).sort((a, b) => b.v - a.v);
   const get = { players: [], picks: [] };
   let got = 0;
   // picks first (how most deals are actually paid); a player only if the user asked for a position
-  const pk = picks.map((k) => ({ k, v: pickTradeValue(k, aiTid) })).sort((a, b) => b.v - a.v);
+  let pk = picks.map((k) => ({ k, v: pickTradeValue(k, aiTid) })).sort((a, b) => b.v - a.v);
+  if (opts.tradeDown) {
+    // trading down: picks in the same draft (or the next one), each worth less than the best pick being shopped
+    const best = gk.reduce((b, k) => (!b || pickTradeValue(k, aiTid) > pickTradeValue(b, aiTid) ? k : b), null);
+    const top = best ? pickTradeValue(best, aiTid) : 0;
+    pk = pk.filter((x) => x.v < top * 0.92 && x.k.s <= (best?.s ?? 0) + 1);
+    // lead with the best pick in that same draft so it reads like a real trade-down
+    const same = pk.find((x) => x.k.s === best?.s);
+    if (!same) return null;
+    get.picks.push(same.k.id); got += same.v;
+    pk = pk.filter((x) => x !== same);
+  }
+  if (opts.picksOnly) {
+    for (const x of pk) { if (got >= target * 0.85) break; if (got + x.v <= target * 1.02 && get.picks.length < 4) { get.picks.push(x.k.id); got += x.v; } }
+    if (!get.picks.length || (opts.tradeDown && get.picks.length < 2) || got < target * 0.6) return null;
+    return { give: { players: [...give.players], picks: [...give.picks] }, get, score: got, kind: opts.tradeDown ? 'down' : 'picks' };
+  }
+  if (opts.playerFirst) pos = pos || '_any';
+  let pool = ps.filter((p) => (!pos || pos === '_any' || p.pos === pos) && !(p.pos === 'QB' && Lg.teams[aiTid].depth.QB?.[0] === p.pid));
+  if (pos === '_any') pool = pool.filter((p) => p.r.ovr >= 70 && age(p) <= 30);
+  let uroom = teamCap(userTid, s).space + gp.reduce((a, p) => a + capHit(p, s), 0);
+  pool = pool.filter((p) => baseOnly(p, s) <= uroom).map((p) => ({ p, v: packageValue(aiTid, [p], [], true) })).filter((x) => x.v <= target * 1.05).sort((a, b) => b.v - a.v);
+  if (pos === '_any') pool = pool.filter((x) => x.v >= target * 0.45); // a real piece, not filler
   if (!pos) for (const x of pk) {
     if (got >= target * 0.85) break;
     if (got + x.v <= target * 1.02 && get.picks.length < 3) { get.picks.push(x.k.id); got += x.v; }
   }
   for (const x of pool) {
     if (got >= target * 0.8) break;
-    if ((pos || got < target * 0.5) && got + x.v <= target * 1.02 && get.players.length < (pos ? 2 : 1) && baseOnly(x.p, s) <= uroom) { get.players.push(x.p.pid); got += x.v; uroom -= baseOnly(x.p, s); }
+    if ((pos || got < target * 0.5) && got + x.v <= target * 1.02 && get.players.length < (pos === '_any' ? 1 : pos ? 2 : 1) && baseOnly(x.p, s) <= uroom) { get.players.push(x.p.pid); got += x.v; uroom -= baseOnly(x.p, s); }
   }
   for (const x of pk) {
     if (got >= target * 0.85) break;

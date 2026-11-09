@@ -1,5 +1,5 @@
 {
-"v": "1101af8c12e0",
+"v": "3ae5ffcea38b",
 "files": [
 "css/style.css",
 "data/league.json",
@@ -28,6 +28,7 @@
 "js/engine/roster.js",
 "js/engine/rulesvote.js",
 "js/engine/schedule.js",
+"js/engine/schemes.js",
 "js/engine/season.js",
 "js/engine/sim.js",
 "js/engine/standings.js",

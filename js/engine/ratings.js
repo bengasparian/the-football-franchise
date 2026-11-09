@@ -444,18 +444,47 @@ export function normalizeTalent() {
   }
 }
 
+// Team overall, Madden-style: raw starter averages only differ by a few points across the league, so they're spread
+// around a fixed reference (the league average when the save was created). Good teams read high-80s, bad teams around 70,
+// and the number still moves as rosters get better or worse over the years.
+const TEAM_UP = 3.6, TEAM_DOWN = 2.1, TEAM_MID = 80; // the elite separate more than the bad sink, like Madden
+// league reference = average team with everyone healthy. Set when the save is created and eased toward the new
+// league each year, so a team's number reflects how it compares while league-wide gains still show a little.
+export function refreshTeamRef(blend = 1) {
+  const Lg = G.L;
+  const all = Lg.teams.map((t) => teamOvrRaw(t.tid, true));
+  const m = (k) => all.reduce((a, x) => a + x[k], 0) / all.length;
+  const old = Lg.meta.teamRef;
+  const nw = { ovr: m('ovr'), off: m('off'), def: m('def') };
+  Lg.meta.teamRef = old && blend < 1 ? { ovr: old.ovr + (nw.ovr - old.ovr) * blend, off: old.off + (nw.off - old.off) * blend, def: old.def + (nw.def - old.def) * blend } : nw;
+}
 export function teamOvr(tid) {
+  const Lg = G.L;
+  const r = teamOvrRaw(tid);
+  if (!Lg.meta.teamRef) refreshTeamRef(1);
+  const R = Lg.meta.teamRef;
+  const sp = (v, ref) => {
+    let x = TEAM_MID + (v - ref) * (v >= ref ? TEAM_UP : TEAM_DOWN);
+    if (x > 90) x = 90 + (x - 90) * 0.45; // only a juggernaut gets into the mid-90s
+    return clamp(Math.round(x), 40, 99);
+  };
+  return { ovr: sp(r.ovr, R.ovr), off: sp(r.off, R.off), def: sp(r.def, R.def), st: Math.round(r.st), qb: Math.round(r.qb), raw: Math.round(r.ovr * 10) / 10 };
+}
+function teamOvrRaw(tid, healthy = false) {
   const Lg = G.L;
   const t = Lg.teams[tid];
   const dc = t.depth;
-  const get = (pos, n) => (dc[pos] || []).slice(0, n).map((pid) => Lg.players[pid]).filter(Boolean);
+  const byPos = healthy ? {} : null;
+  if (healthy) for (const p of Object.values(Lg.players)) if (p.tid === tid && p.status !== 'PS') (byPos[p.pos] ||= []).push(p);
+  const get = healthy ? (pos, n) => (byPos[pos] || []).sort((a, b) => b.r.ovr - a.r.ovr).slice(0, n)
+    : (pos, n) => (dc[pos] || []).slice(0, n).map((pid) => Lg.players[pid]).filter(Boolean);
   const avgO = (arr) => (arr.length ? arr.reduce((a, p) => a + p.r.ovr, 0) / arr.length : 50);
   const qb = avgO(get('QB', 1));
   const off = qb * 0.3 + avgO(get('RB', 1)) * 0.07 + avgO(get('WR', 3)) * 0.2 + avgO(get('TE', 1)) * 0.08 +
     avgO([...get('OT', 2), ...get('OG', 2), ...get('C', 1)]) * 0.35;
   const def = avgO(get('EDGE', 2)) * 0.25 + avgO(get('DT', 2)) * 0.18 + avgO(get('LB', 2)) * 0.15 + avgO(get('CB', 3)) * 0.25 + avgO(get('S', 2)) * 0.17;
   const st = avgO([...get('K', 1), ...get('P', 1)]);
-  return { ovr: round(off * 0.5 + def * 0.43 + st * 0.07), off: round(off), def: round(def), st: round(st), qb: round(qb) };
+  return { ovr: off * 0.5 + def * 0.43 + st * 0.07, off, def, st, qb };
 }
 export { PHYS };
 void allPlayers;

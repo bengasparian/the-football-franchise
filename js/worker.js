@@ -2,9 +2,9 @@
 import { G, setRngState, rngState } from './engine/core.js';
 import * as API from './engine/api.js';
 
-const READ_ONLY = new Set(['header', 'dashboard', 'teams', 'roster', 'playerDetail', 'depth', 'standings', 'schedule', 'game', 'playerStats', 'leaders',
+const READ_ONLY = new Set(['header', 'dashboard', 'teams', 'roster', 'playerDetail', 'depth', 'lineupInfo', 'standings', 'schedule', 'game', 'playerStats', 'leaders',
   'teamStats', 'newsFeed', 'capSheet', 'faList', 'tradeAssets', 'tradeEval', 'tradeFind', 'tradeMakeItWork', 'tradeOffers', 'draftBoard', 'draftState',
-  'fantasyState', 'staff', 'finances', 'rulesView', 'history', 'eventsList', 'settings', 'onlineTeams', 'teamsForPicker', 'recap', 'awardRace', 'nflHistory', 'franchiseOptions']);
+  'fantasyState', 'staff', 'finances', 'rulesView', 'history', 'eventsList', 'settings', 'onlineTeams', 'teamsForPicker', 'recap', 'playoffBracket', 'awardRace', 'nflHistory', 'franchiseOptions']);
 
 let DATA = null;
 let saveId = null;

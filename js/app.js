@@ -1,6 +1,6 @@
 // App shell: router, header with sim controls, sidebar, start screen, settings, online.
 import { call, session, net, host, join, claim, onNet, sendChat, setReady, guestStatus, leaveOnline, setToastHandler, clearReady, readyCounts } from './client.js';
-import { esc, $, $$, money, modal, closeModal, toast, busy, logo, setAccent, resetTheme, TABLES } from './ui.js';
+import { esc, $, $$, money, modal, closeModal, toast, busy, logo, setAccent, resetTheme, TABLES, redrawTable } from './ui.js';
 void $$;
 import { PAGES, ACTIONS as PA } from './pages.js';
 import { PAGES2, ACTIONS as PA2 } from './pages2.js';
@@ -51,7 +51,7 @@ async function boot() {
   setInterval(() => { liveTick(); }, 3000);
   initTooltips();
   try {
-    await call('init');
+    // The 2.4MB real-NFL data file is only needed to start a new league, so a returning player skips it entirely.
     const h = await call('hasLeague');
     if (!h.loaded) {
       const saves = await call('listSaves');
@@ -200,7 +200,7 @@ async function onClick(e) {
   const sortTh = e.target.closest('th[data-sort]');
   if (sortTh && sortTh.dataset.sort) {
     const st = TABLES[sortTh.dataset.tbl];
-    if (st) { st.dir = st.sort === sortTh.dataset.sort && st.dir === 'desc' ? 'asc' : 'desc'; st.sort = sortTh.dataset.sort; rerender(); }
+    if (st) { st.dir = st.sort === sortTh.dataset.sort && st.dir === 'desc' ? 'asc' : 'desc'; st.sort = sortTh.dataset.sort; if (APP.pageCache) delete APP.pageCache[location.hash]; if (!redrawTable(sortTh.dataset.tbl)) rerender(); }
     return;
   }
   const row = e.target.closest('tr[data-row]');
@@ -237,7 +237,7 @@ const CORE = {
   menu: () => {},
   help: () => { const k = APP.route || 'home'; const h = HELP[k] || HELP.home; modal(`${esc(h[0])}`, `<div style="line-height:1.6">${h[1]}</div><div class="row" style="margin-top:14px"><button class="btn" data-act="tourStart">Replay the guided tour</button></div>`, { narrow: true }); },
   tourStart: () => { closeModal(); startTour(); },
-  tblMore: (el) => { const st = TABLES[el.dataset.tbl]; if (st) { st.limit = 0; rerender(); } },
+  tblMore: (el) => { const st = TABLES[el.dataset.tbl]; if (st) { st.limit = 0; if (APP.pageCache) delete APP.pageCache[location.hash]; if (!redrawTable(el.dataset.tbl)) rerender(); } },
   async sim(el) {
     const target = el.dataset.target;
     if (target === 'draftnext') { await act('draftSim', { all: false }, { busyText: 'On the clock…' }); return; }
@@ -253,7 +253,7 @@ const CORE = {
 };
 
 // ---------------------------------------------------------------- start screen
-const START = { mode: 'current', teams: new Set(), fantasy: false, name: 'My Franchise' };
+const START = { mode: 'current', teams: new Set(), fantasy: false, name: 'My Franchise', slot: 'random' };
 async function renderStart() {
   drawTop(); $('#nav').innerHTML = '';
   const [teams, saves, info] = await Promise.all([call('teamsForPicker'), call('listSaves'), call('init')]);
@@ -276,6 +276,7 @@ async function renderStart() {
         ${mode('preseason', '2026 Preseason', 'Start in August: preseason games, camp battles, and cutting down to 53. Then the full season.')}
       </div>
       <label class="chk" style="margin-bottom:12px"><input type="checkbox" id="fantasy" ${START.fantasy ? 'checked' : ''} data-change="startFantasy"> <b>Fantasy draft</b> <span class="muted">— all 32 teams redraft every player in a 53-round snake draft (contracts stay with players). Fantasy leagues always start in the 2026 preseason.</span></label>
+      ${START.fantasy ? `<div class="row" style="margin:-4px 0 12px 26px;gap:8px"><span class="small">Your draft slot</span><select data-change="startSlot" title="Where you pick in round 1. It's a snake draft, so the order flips every round.">${['random', ...Array.from({ length: 32 }, (_, i) => i + 1)].map((v) => `<option value="${v}" ${String(START.slot) === String(v) ? 'selected' : ''}>${v === 'random' ? 'Random' : `Pick ${v}`}</option>`).join('')}</select><span class="tiny muted">Snake draft: the order reverses every round.</span></div>` : ''}
       <h3>Choose your team <span class="muted small" style="text-transform:none">(pick more than one for local multiplayer, or host online after creating)</span></h3>
       <div class="teamgrid">${order.map((d) => `<div class="div"><h4>${d}</h4>${(byDiv[d] || []).map((t) => `<div class="tpick ${START.teams.has(t.abbr) ? 'on' : ''}" data-act="pickTeam" data-abbr="${t.abbr}">${logo(t.logo, '')}<span>${esc(t.region)} <b>${esc(t.name)}</b></span></div>`).join('')}</div>`).join('')}</div>
       <div class="row" style="margin-top:16px"><button class="btn pri" data-act="createLeague" ${START.teams.size ? '' : 'disabled'}>Create League ▶</button><span class="muted small">${START.teams.size ? [...START.teams].join(', ') : 'Select at least one team'}</span>
@@ -285,13 +286,14 @@ async function renderStart() {
 const phaseNice = (p) => ({ REGULAR_SEASON: 'Season', PRESEASON: 'Preseason', PLAYOFFS: 'Playoffs', SEASON_END: 'Offseason', RESIGN: 'Re-sign', FREE_AGENCY: 'Free Agency', LEAGUE_MEETING: 'League Meeting', DRAFT: 'Draft', POST_DRAFT: 'UDFA', TRAINING_CAMP: 'Camp', FANTASY_DRAFT: 'Fantasy Draft' }[p] || p);
 Object.assign(CORE, {
   startMode(el) { START.mode = el.dataset.mode; START.name = $('#lgName')?.value || START.name; renderStart(); },
+  startSlot(el) { START.slot = el.value; },
   startFantasy(el) { START.fantasy = el.checked; START.name = $('#lgName')?.value || START.name; renderStart(); },
   pickTeam(el) { START.name = $('#lgName')?.value || START.name; const a = el.dataset.abbr; START.teams.has(a) ? START.teams.delete(a) : START.teams.add(a); renderStart(); },
   async createLeague() {
     START.name = $('#lgName')?.value || START.name;
     busy(true, 'Building your league from real NFL data…');
     try {
-      const r = await call('newLeague', { start: START.fantasy ? 'preseason' : START.mode, userTeams: [...START.teams], fantasy: START.fantasy, name: START.name, seed: Date.now() });
+      const r = await call('newLeague', { start: START.fantasy ? 'preseason' : START.mode, userTeams: [...START.teams], fantasy: START.fantasy, fantasySlot: START.slot, name: START.name, seed: Date.now() });
       localStorage.setItem('tff-last', r.saveId);
       session.tid = null; APP.teams = null;
       busy(false);

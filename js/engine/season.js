@@ -2,7 +2,7 @@
 import { G, rnd, gauss, clamp, age, news, transaction, capFor, isUser, shuffle, nextId, pick } from './core.js';
 import { simGame } from './sim.js';
 import { applyGameInjuries, weeklyInjuryUpdate } from './injuries.js';
-import { updateInSeasonRatings, offseasonProgression, setOvr } from './ratings.js';
+import { updateInSeasonRatings, offseasonProgression, setOvr, refreshTeamRef } from './ratings.js';
 import { updateMorale, checkUnrest } from './personality.js';
 import { marketValue, teamCap, releasePlayer, capSeason, playerAsk, signContract } from './contracts.js';
 const playerAskSafe = (p) => { try { return playerAsk(p, p.tid); } catch { return null; } };
@@ -11,7 +11,7 @@ import { computeStandings, playoffSeeds, divisionOrder } from './standings.js';
 import { aiWeekly, aiResignPhase, aiTenders, aiCapCompliance, aiCutdown, aiOffseasonFill, aiExtensions, fillToMax } from './ai.js';
 import { aiTradeRound, aiOffersToUser } from './trade.js';
 import { startFreeAgency, faDay, faFinish, freeAgents, aiFillRoster } from './fa.js';
-import { startDraft, simDraftToUser, genDraftClass, computeDraftOrder, finishDraft } from './draft.js';
+import { startDraft, simDraftToUser, genDraftClass, computeDraftOrder, finishDraft, autoScout } from './draft.js';
 import { seasonAwards, sbMvp, processRetirements, hallOfFame } from './awards.js';
 import { startLeagueMeeting, tallyVotes } from './rulesvote.js';
 import { aiCoachingCarousel } from './coaches.js';
@@ -133,7 +133,7 @@ function afterWeek() {
   computeStandings();
   weeklyInjuryUpdate();
   processWaivers();
-  { const up = Lg.settings.sliders.upsetFactor ?? 1; for (const t of Lg.teams) t.sf = clamp((t.sf || 0) * 0.97 + gauss(0, 0.45 * up), -5 * up, 5 * up); }
+  { const up = Lg.settings.sliders.upsetFactor ?? 1; for (const t of Lg.teams) t.sf = clamp((t.sf || 0) * 0.96 + gauss(0, 0.3 * up), -3.5 * up, 3.5 * up); }
   const byTeam = {};
   for (const p of Object.values(Lg.players)) if (p.tid >= 0) (byTeam[p.tid] ||= []).push(p);
   for (const t of Lg.teams) aiWeekly(t.tid, byTeam[t.tid] || []);
@@ -150,7 +150,7 @@ function afterWeek() {
     }
     if (m.week === 12 || m.week === 15) for (const t of Lg.teams) aiExtensions(t.tid);
     resolveHoldouts();
-    for (const ut of m.userTids) Lg.teams[ut].scoutPts = (Lg.teams[ut].scoutPts || 0) + 40;
+    for (const ut of m.userTids) { Lg.teams[ut].scoutPts = (Lg.teams[ut].scoutPts || 0) + 40; if (Lg.teams[ut].autoScout) autoScout(ut); }
     weeklyEvents();
     setPowerRanks();
   }
@@ -463,7 +463,7 @@ function enterDraft() {
   startDraft();
   // draft season equals the new league year
   Lg.draft.s = Lg.meta.season;
-  for (const ut of Lg.meta.userTids) Lg.teams[ut].scoutPts = (Lg.teams[ut].scoutPts || 0) + 150;
+  for (const ut of Lg.meta.userTids) { Lg.teams[ut].scoutPts = (Lg.teams[ut].scoutPts || 0) + 150; if (Lg.teams[ut].autoScout) autoScout(ut); }
 }
 
 function enterPostDraft() {
@@ -483,7 +483,7 @@ function enterTrainingCamp() {
   setExpectations();
   for (const ut of m.userTids) setOwnerGoals(Lg.teams[ut]);
   genDraftClass(m.season + 1);
-  for (const ut of m.userTids) Lg.teams[ut].scoutPts = 60;
+  for (const ut of m.userTids) { Lg.teams[ut].scoutPts = 60; if (Lg.teams[ut].autoScout) autoScout(ut); }
   news(`Training camps open around the league.`, { type: 'system' });
 }
 
@@ -492,6 +492,7 @@ function enterPreseason() {
   Lg.meta.phase = 'PRESEASON'; Lg.meta.week = 1;
   ensurePreseasonGames();
   for (const p of Object.values(Lg.players)) if (p.r) p.r.ovrStart = p.r.ovr;
+  refreshTeamRef(0.6); // team overalls compare to this year's league (mostly), so they track who got better or worse
 }
 
 // Advance one step (week, playoff round, FA day, or phase)
