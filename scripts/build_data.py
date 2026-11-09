@@ -735,6 +735,19 @@ def weeks_out_for_date(team, date):
     if extra > 5: return 99
     return (18 - CUR_WEEK + 1) + extra
 
+# first week of each player's current reserve stint (IR / PUP), from the weekly rosters
+IR_START = {}
+_rw = D["roster_weekly"]
+_rw = _rw[_rw.season == SEASON] if "season" in _rw else _rw
+for gid_, grp in _rw.sort_values("week").groupby("gsis_id"):
+    st = list(zip(grp.week.astype(int), grp.status.astype(str)))
+    if not st or st[-1][1] != "RES": continue
+    start = st[-1][0]
+    for w_, s_ in reversed(st):
+        if s_ != "RES": break
+        start = w_
+    IR_START[gid_] = start
+
 def espn_for(r):
     eid = getattr(r, "espn_id", None)
     if eid is not None and not (isinstance(eid, float) and math.isnan(eid)):
