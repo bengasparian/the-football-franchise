@@ -4,14 +4,14 @@ import { REAL_HISTORY } from './history.js';
 import { awardScores } from './awards.js';
 import { CITIES, BRANDS, crest, relocateTeam, rebrandTeam } from './relocation.js';
 import { faTick, faStatus } from './fa.js';
-import { DEV_INFO, longevityLabel } from './dev.js';
-import { G, age, capFor, clamp, setRngState, rngState, fmtMoney, isUser, news } from './core.js';
+import { DEV, DEV_INFO, longevityLabel } from './dev.js';
+import { G, age, capFor, clamp, setRngState, rngState, fmtMoney, isUser, news, transaction } from './core.js';
 import { POSITIONS, POS_NAMES, PHASE_LABEL, ROUND_LABEL, DEFAULT_SLIDERS, SLIDER_INFO, DEPTH_SLOTS } from './const.js';
 import { createLeague } from './league.js';
-import { ATTR_NAMES, OVR_W, potLabel, teamOvr } from './ratings.js';
+import { ATTR_NAMES, ATTRS, OVR_W, potLabel, teamOvr, computeOvr, setOvr } from './ratings.js';
 import { personalityLabels } from './personality.js';
 import { marketValue, playerAsk, negotiate, signContract, teamCap, capSeason, futureCommitments, deadMoneyIfCut, releasePlayer, restructurePreview,
-  restructure, applyTag, tagValues, exerciseOption, fifthYearOptionValue, capHit, psDeal, minDeal, idealYears, negotiationOptions } from './contracts.js';
+  restructure, applyTag, tagValues, exerciseOption, fifthYearOptionValue, capHit, psDeal, minDeal, idealYears, negotiationOptions, makeContract } from './contracts.js';
 import { autoDepth, setDepth, rosterCounts } from './roster.js';
 import { OFF_SCHEMES, DEF_SCHEMES, ROLES, teamScheme, teamFit, playerFit, fitLabel, resolveRoles, roleScore } from './schemes.js';
 import { placeOnIR, activateFromIR } from './injuries.js';
@@ -881,4 +881,74 @@ export function rebrand({ name, c1, c2, shape }, ctx) {
   name = String(name || '').trim().slice(0, 18);
   if (!name) return { error: 'Pick a name.' };
   return rebrandTeam(ctx.tid, { name, c1, c2, shape });
+}
+
+// ------------------------------------------------------------------ commissioner: edit any player (league creator only)
+const PERS_KEYS = [['greed', 'Money motivated'], ['loyal', 'Loyalty'], ['win', 'Wants to win'], ['ego', 'Ego / wants the ball'], ['work', 'Work ethic'], ['lead', 'Leadership'], ['volat', 'Hot-headed'], ['media', 'Media presence']];
+function requireCreator(ctx) {
+  // offline you're always the creator; online only the host (guests can't even reach this call)
+  if (G.L.meta.online && !ctx.host) throw new Error('Only the league creator can edit players.');
+}
+export function playerEditInfo({ pid }, ctx) {
+  requireCreator(ctx);
+  const p = L().players[pid];
+  if (!p) throw new Error('Player not found');
+  const c = p.contract && !p.contract.ps ? p.contract : null;
+  const s = capSeason();
+  return {
+    pid, fn: p.fn, ln: p.ln, pos: p.pos, jn: p.jn ?? null, age: age(p), ovr: p.r.ovr, pot: Math.round(p.r.pot ?? p.r.ovr), dev: p.dev || 'Normal', lon: p.lon ?? 70,
+    morale: Math.round(p.morale ?? 65), attrs: ATTRS.map((k) => ({ k, l: ATTR_NAMES[k], v: p.r.a[k] ?? 50, key: (OVR_W[p.pos] || {})[k] ? 1 : 0 })),
+    pers: PERS_KEYS.map(([k, l]) => ({ k, l, v: Math.round((p.pers?.[k] ?? 0.5) * 100) })), devs: DEV, positions: POSITIONS,
+    contract: c ? { apy: c.apy, years: c.years.filter((y) => y.s >= s).length || 1, gtd: c.gtd || 0 } : null, hasTeam: p.tid >= 0, inj: p.inj ? { type: p.inj.type, wk: p.inj.wk } : null,
+  };
+}
+export function editPlayer({ pid, ch = {} }, ctx) {
+  requireCreator(ctx);
+  const Lg = L();
+  const p = Lg.players[pid];
+  if (!p) throw new Error('Player not found');
+  const num = (v, lo, hi) => (v === '' || v == null || isNaN(+v) ? null : clamp(Math.round(+v), lo, hi));
+  if (typeof ch.fn === 'string' && ch.fn.trim()) p.fn = ch.fn.trim().slice(0, 40);
+  if (typeof ch.ln === 'string' && ch.ln.trim()) p.ln = ch.ln.trim().slice(0, 40);
+  const oldPos = p.pos;
+  if (ch.pos && POSITIONS.includes(ch.pos) && ch.pos !== p.pos) p.pos = ch.pos;
+  const jn = num(ch.jn, 0, 99);
+  if (jn != null && jn !== p.jn) {
+    // a teammate already wearing it gets this player's old number (or a new one)
+    const mate = p.tid >= 0 ? Object.values(Lg.players).find((q) => q.tid === p.tid && q.pid !== p.pid && q.jn === jn) : null;
+    if (mate) mate.jn = p.jn ?? null;
+    p.jn = jn;
+  }
+  const ag = num(ch.age, 18, 50);
+  if (ag != null && ag !== age(p)) { const d = ag - age(p); p.born = { ...(p.born || { y: Lg.meta.season - 25, m: 6 }), y: (p.born?.y ?? Lg.meta.season - 25) - d }; }
+  // ratings: individual attributes first, then an overall change (which shifts the skill attributes to match)
+  let attrChanged = false;
+  if (ch.attrs && typeof ch.attrs === 'object') for (const k of ATTRS) { const v = num(ch.attrs[k], 15, 99); if (v != null && v !== p.r.a[k]) { p.r.a[k] = v; attrChanged = true; } }
+  const before = p.r.ovr;
+  if (attrChanged || p.pos !== oldPos) p.r.ovr = computeOvr(p.pos, p.r.a);
+  const ov = num(ch.ovr, 25, 99);
+  if (ov != null && ov !== p.r.ovr && ov !== before) setOvr(p, ov, true);
+  if (p.r.ovr !== before) { p.r.tal = clamp((p.r.tal ?? before) + (p.r.ovr - before), 25, 99); p.r.ovrStart = p.r.ovr; }
+  const pot = num(ch.pot, 25, 99);
+  if (pot != null) { p.r.pot = Math.max(pot, p.r.ovr); p.r.potEst = p.r.pot; }
+  if (ch.dev && DEV.includes(ch.dev)) p.dev = ch.dev;
+  const lon = num(ch.lon, 0, 99); if (lon != null) p.lon = lon;
+  const mo = num(ch.morale, 0, 100); if (mo != null) p.morale = mo;
+  if (ch.pers && typeof ch.pers === 'object') { p.pers ||= {}; for (const [k] of PERS_KEYS) { const v = num(ch.pers[k], 0, 100); if (v != null) p.pers[k] = clamp(v / 100, 0.02, 0.98); } }
+  if (ch.contract && p.tid >= -1) {
+    const apy = num(ch.contract.apy, 0, 200e6), yrs = num(ch.contract.years, 1, 7), gtd = num(ch.contract.gtd, 0, 1500e6);
+    if (apy != null && yrs != null) {
+      const old = p.contract || {};
+      p.contract = makeContract({ start: capSeason(), years: yrs, apy: Math.max(apy, 750000), gtd: Math.min(gtd ?? 0, apy * yrs), extra: { type: old.type || 'Veteran' } });
+      if (p.tid === -1) p.contract = null; // free agents don't carry a deal; their asking price follows ratings
+    }
+  }
+  if (ch.heal && p.inj) { p.inj = null; if (p.status === 'IR') p.healedOnIR = true; }
+  if (p.tid >= 0) {
+    if (p.pos !== oldPos) for (const k in T(p.tid).depth) T(p.tid).depth[k] = T(p.tid).depth[k].filter((x) => x !== p.pid);
+    autoDepth(p.tid, { keepUserOrder: true });
+  }
+  Lg.standingsCache = null;
+  transaction('edit', `Commissioner edited ${p.fn} ${p.ln}`, { tids: p.tid >= 0 ? [p.tid] : [], pids: [p.pid] });
+  return { ok: true };
 }

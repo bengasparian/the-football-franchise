@@ -50,7 +50,7 @@ async def main():
             await pg.screenshot(path='/tmp/s_box.png')
             await pg.keyboard.press('Escape')
         await pg.goto(URL + '#/depth'); await pg.wait_for_timeout(600)
-        await pg.click('[data-act=depthPos][data-p=OT]'); await pg.wait_for_timeout(500)
+        await pg.click('[data-act=depthPos][data-p=LT]'); await pg.wait_for_timeout(500)
         await pg.screenshot(path='/tmp/s_depth.png')
         await pg.goto(URL + '#/lineup'); await pg.wait_for_timeout(600)
         await pg.click('.slot >> nth=1'); await pg.wait_for_timeout(500)

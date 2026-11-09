@@ -478,3 +478,13 @@ input[type=color] { width: 100%; height: 34px; padding: 2px; background: var(--p
 .fd-board .bp span { font-family: var(--cond); font-weight: 800; font-size: 12px; }
 .bp.p-q { background: rgba(251,191,36,.18); } .bp.p-o { background: rgba(59,130,246,.18); } .bp.p-l { background: rgba(148,163,184,.18); }
 .bp.p-d { background: rgba(239,68,68,.18); } .bp.p-b { background: rgba(34,197,94,.18); } .bp.p-s { background: rgba(192,132,252,.18); }
+
+/* ---------- commissioner player editor */
+.pe-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.pe-grid .card { margin: 0; }
+.pe-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: 13px; }
+.pe-row input:not([type=checkbox]), .pe-row select { max-width: 150px; }
+.pe-attrs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; }
+.pe-a { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; color: var(--muted); }
+.pe-a.key { color: inherit; font-weight: 700; }
+.pe-a input { width: 58px; }

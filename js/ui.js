@@ -228,7 +228,33 @@ export function injText(p) {
 // ---------- depth chart slot names: the #2 tackle is the right tackle (a starter), not a backup
 const SLOT_NAMES = { QB: ['QB'], RB: ['HB'], FB: ['FB'], WR: ['WR1', 'WR2', 'WR3'], TE: ['TE'], OT: ['LT', 'RT'], OG: ['LG', 'RG'], C: ['C'],
   EDGE: ['LE', 'RE'], DT: ['DT', 'DT'], LB: ['LB', 'LB'], CB: ['CB1', 'CB2', 'CB3'], S: ['FS', 'SS'], K: ['K'], P: ['P'], LS: ['LS'], KR: ['KR'], PR: ['PR'] };
-export const startersAt = (pos) => SLOT_NAMES[pos]?.length || 1;
+export const startersAt = (pos) => (SPLIT[pos] ? 1 : SLOT_NAMES[pos]?.length || 1);
+
+// ---------- side-specific depth positions: Left Tackle and Right Tackle are separate spots on the depth chart
+// (likewise guards, defensive ends and safeties). Each has its own starter and its own backups. They're stored as one
+// ordered list per position group (index 0 = left/free starter, 1 = right/strong starter, then backups), so the game
+// engine never sees anything new; these helpers convert between the two.
+export const SPLIT = { LT: ['OT', 0], RT: ['OT', 1], LG: ['OG', 0], RG: ['OG', 1], LE: ['EDGE', 0], RE: ['EDGE', 1], FS: ['S', 0], SS: ['S', 1] };
+export const SPLIT_NAMES = { LT: 'Left Tackle', RT: 'Right Tackle', LG: 'Left Guard', RG: 'Right Guard', LE: 'Left End', RE: 'Right End', FS: 'Free Safety', SS: 'Strong Safety' };
+// players listed at one side: its starter, then the shared backups (never the other side's starter)
+export function splitList(parent, side) {
+  const P = parent || [];
+  return [P[side], ...P.slice(2)].filter((x) => x != null);
+}
+// rebuild the group list after one side's list was edited (ids or objects with .pid)
+export function mergeSplit(parent, side, list) {
+  const id = (x) => (x && typeof x === 'object' ? x.pid : x);
+  const P = (parent || []).map(id), L = list.map(id).filter(Boolean);
+  const other = P[1 - side];
+  let mine = L[0] ?? null, theirs = other ?? null;
+  if (mine != null && mine === theirs) theirs = P[side] ?? null; // promoted the other side's starter: they swap
+  const backups = L.slice(1).filter((x) => x !== mine && x !== theirs);
+  // anyone who was a backup and is still listed keeps his place; removed players leave the group
+  const starters = side === 0 ? [mine, theirs] : [theirs, mine];
+  const out = [...starters.filter((x) => x != null), ...backups];
+  for (const x of P.slice(2)) if (!out.includes(x) && L.includes(x)) out.push(x);
+  return [...new Set(out)];
+}
 export function slotLabel(pos, i) {
   const n = SLOT_NAMES[pos];
   if (n && i < n.length) return n[i];

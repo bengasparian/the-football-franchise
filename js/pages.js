@@ -1,6 +1,6 @@
 // Team & league pages
 import { call, session, net } from './client.js';
-import { esc, $, $$, money, pct, ht, ovr, delta, hs, logo, pname, injBadge, injText, moraleTxt, meter, contractTxt, table, modal, closeModal, toast, sparkline, bars, slotLabel, startersAt } from './ui.js';
+import { esc, $, $$, money, pct, ht, ovr, delta, hs, logo, pname, injBadge, injText, moraleTxt, meter, contractTxt, table, modal, closeModal, toast, sparkline, bars, slotLabel, startersAt, SPLIT, SPLIT_NAMES, splitList, mergeSplit } from './ui.js';
 import { APP, act, rerender, render } from './app.js';
 
 export const PAGES = {};
@@ -180,8 +180,44 @@ function playerButtons(p) {
     b.push(`<button class="btn danger" data-act="releaseAsk" data-pid="${esc(p.pid)}">Release</button>`);
   } else if (p.team && !p.mine) b.push(`<a class="btn" href="#/trade/${p.team.tid}?want=${encodeURIComponent(p.pid)}" data-act="tradeFor" data-pid="${esc(p.pid)}" data-tid="${p.team.tid}">Trade for ${esc(p.ln)}</a>`);
   if (p.status === 'PROSPECT') b.push(`<button class="btn pri" data-act="scout" data-pid="${esc(p.pid)}" ${p.scoutLvl >= 3 ? 'disabled' : ''}>${p.scoutLvl >= 3 ? 'Fully scouted' : `Scout (${p.scoutCost} pts)`}</button><button class="btn" data-act="boardToggle" data-pid="${esc(p.pid)}">Add/remove from my board</button>`);
+  // commissioner tools: only the league creator (anyone offline, the host online) can edit players
+  if (net.mode !== 'guest' && p.status !== 'PROSPECT') b.push(`<button class="btn ghost" data-act="editPlayer" data-pid="${esc(p.pid)}" title="Commissioner: edit ratings, number, contract, traits and more">✏️ Edit player</button>`);
   return b.length ? `<div class="row" style="margin-bottom:14px">${b.join('')}</div>` : '';
 }
+// ---------- commissioner player editor
+ACTIONS.editPlayer = async (el) => {
+  const e = await call('playerEditInfo', { pid: el.dataset.pid });
+  const inp = (id, v, extra = '') => `<input id="pe_${id}" value="${esc(v ?? '')}" ${extra}>`;
+  const numI = (id, v, lo, hi, step = 1) => `<input id="pe_${id}" type="number" min="${lo}" max="${hi}" step="${step}" value="${v ?? ''}" style="width:90px">`;
+  const sel = (id, opts, cur) => `<select id="pe_${id}">${opts.map((o) => `<option ${o === cur ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+  const row = (l, h, tip = '') => `<label class="pe-row" title="${esc(tip)}"><span>${l}</span>${h}</label>`;
+  modal(`Edit ${esc(e.fn)} ${esc(e.ln)}`, `<div class="small muted" style="margin-bottom:10px">Commissioner tools. Changes take effect right away and are logged in transactions.</div>
+    <div class="pe-grid">
+      <div class="card"><h3>Basics</h3>${row('First name', inp('fn', e.fn))}${row('Last name', inp('ln', e.ln))}${row('Position', sel('pos', e.positions, e.pos))}${row('Jersey #', numI('jn', e.jn, 0, 99), 'A teammate wearing this number swaps with him')}${row('Age', numI('age', e.age, 18, 50))}
+        ${e.inj ? `<label class="pe-row"><span>Injury</span><span class="small">${esc(e.inj.type)} <input type="checkbox" id="pe_heal"> heal now</span></label>` : ''}</div>
+      <div class="card"><h3>Ratings & traits</h3>${row('Overall', numI('ovr', e.ovr, 25, 99), 'Skill attributes shift to match')}${row('Potential', numI('pot', e.pot, 25, 99))}${row('Dev trait', sel('dev', e.devs, e.dev))}${row('Longevity', numI('lon', e.lon, 0, 99), 'How long his body holds up')}${row('Morale', numI('morale', e.morale, 0, 100))}</div>
+      <div class="card"><h3>Contract</h3>${e.contract ? `${row('Per year ($M)', numI('apy', (e.contract.apy / 1e6).toFixed(2), 0.75, 200, 0.05))}${row('Years left', numI('yrs', e.contract.years, 1, 7))}${row('Guaranteed ($M)', numI('gtd', (e.contract.gtd / 1e6).toFixed(2), 0, 1500, 0.05))}<div class="tiny muted">Saving rewrites the deal from this season: base salaries, signing bonus and guarantees are rebuilt.</div>` : '<div class="small muted">No contract (free agent or practice squad).</div>'}</div>
+      <div class="card"><h3>Personality (0-100)</h3>${e.pers.map((x) => row(esc(x.l), numI('pers_' + x.k, x.v, 0, 100))).join('')}</div>
+    </div>
+    <div class="card"><h3>Attributes</h3><div class="tiny muted" style="margin-bottom:6px">Bold attributes count toward his overall at ${esc(e.pos)}. If you change attributes, the overall is recalculated from them (unless you also typed a new overall).</div><div class="pe-attrs">${e.attrs.map((a) => `<label class="pe-a ${a.key ? 'key' : ''}"><span>${esc(a.l)}</span><input id="pe_a_${a.k}" type="number" min="15" max="99" value="${a.v}"></label>`).join('')}</div></div>
+    <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn" data-act="closeModal">Cancel</button><button class="btn pri" data-act="editPlayerSave" data-pid="${esc(e.pid)}">Save changes</button></div>`);
+  APP.peOrig = e;
+};
+ACTIONS.editPlayerSave = async (el) => {
+  const e = APP.peOrig;
+  const v = (id) => document.getElementById('pe_' + id)?.value;
+  const ch = { fn: v('fn'), ln: v('ln'), pos: v('pos'), dev: v('dev') };
+  for (const k of ['jn', 'age', 'pot', 'lon', 'morale']) if (v(k) !== '' && +v(k) !== +(e[k] ?? NaN)) ch[k] = +v(k);
+  if (+v('ovr') !== e.ovr) ch.ovr = +v('ovr');
+  const attrs = {}; let ac = false;
+  for (const a of e.attrs) { const x = +v('a_' + a.k); if (x !== a.v) { attrs[a.k] = x; ac = true; } }
+  if (ac) ch.attrs = attrs;
+  const pers = {}; for (const x of e.pers) pers[x.k] = +v('pers_' + x.k); ch.pers = pers;
+  if (e.contract) { const apy = Math.round(+v('apy') * 1e6), yrs = +v('yrs'), gtd = Math.round(+v('gtd') * 1e6); if (apy !== e.contract.apy || yrs !== e.contract.years || gtd !== e.contract.gtd) ch.contract = { apy, years: yrs, gtd }; }
+  if (document.getElementById('pe_heal')?.checked) ch.heal = true;
+  closeModal();
+  await act('editPlayer', { pid: el.dataset.pid, ch }, { msg: 'Player updated.' });
+};
 function attrColor(v) { return v >= 90 ? '#a855f7' : v >= 80 ? '#22c55e' : v >= 70 ? '#3b82f6' : v >= 60 ? '#64748b' : '#475569'; }
 function ratingsTab(p) {
   const a = p.ratings.attrs;
@@ -297,20 +333,34 @@ ACTIONS.ngUseCounter = (el) => { $('#ngY').value = el.dataset.y; $('#ngA').value
 
 // ===================================================================== DEPTH CHART
 let depthPos = 'QB';
+// Depth chart positions. Tackles, guards, ends and safeties are separate Left/Right (Free/Strong) spots, each with its
+// own starter; the backups behind them are shared (a swing tackle backs up both sides).
+const DEPTH_POS = ['QB', 'RB', 'FB', 'WR', 'TE', 'LT', 'LG', 'C', 'RG', 'RT', 'LE', 'DT', 'RE', 'LB', 'CB', 'FS', 'SS', 'K', 'P', 'LS', 'KR', 'PR'];
+const depthParent = (pos) => (SPLIT[pos] ? SPLIT[pos][0] : pos);
+const depthLabel = (pos, i) => (SPLIT[pos] ? (i === 0 ? pos : `${pos}${i + 1}`) : slotLabel(pos, i));
+const depthList = (d, pos) => (SPLIT[pos] ? splitList(d.depth[SPLIT[pos][0]] || [], SPLIT[pos][1]) : d.depth[pos] || []);
 PAGES.depth = async ([tidS]) => {
   const tid = tidS ? +tidS : session.tid;
   const d = await call('depth', { tid });
-  const list = d.depth[depthPos] || [];
-  const pool = d.pool.filter((p) => !list.find((x) => x.pid === p.pid)).sort((a, b) => (b.pos === depthPos) - (a.pos === depthPos) || b.ovr - a.ovr);
-  const allPos = [...POS, 'KR', 'PR'];
+  if (['OT', 'OG', 'EDGE', 'S'].includes(depthPos)) depthPos = { OT: 'LT', OG: 'LG', EDGE: 'LE', S: 'FS' }[depthPos];
+  const list = depthList(d, depthPos);
+  const par = depthParent(depthPos);
+  const pool = d.pool.filter((p) => !list.find((x) => x.pid === p.pid)).sort((a, b) => (b.pos === par) - (a.pos === par) || b.ovr - a.ovr);
+  const allPos = DEPTH_POS;
   return `<div class="page-h"><h1>Depth Chart</h1><span class="sub">${esc(d.team.region)} ${esc(d.team.name)}${d.locked ? ' · custom order locked' : ' · auto-managed'}</span><div class="right">${d.mine ? `<select data-change="injAutoSel" title="What happens to your lineup when a starter gets hurt"><option value="1" ${d.injAuto ? 'selected' : ''}>Injuries: staff adjusts lineup</option><option value="0" ${d.injAuto ? '' : 'selected'}>Injuries: I'll adjust manually</option></select>` : ''}<a class="btn" href="#/lineup" title="Set your starters on a field view">Adjust Lineup</a>${d.mine ? '<button class="btn" data-act="depthAuto" title="Let your coaches sort every position by overall">Auto-set all</button>' : ''}</div></div>
-    <div class="chips" style="margin-bottom:14px">${allPos.map((p) => `<span class="pill ${p === depthPos ? 'on' : ''}" data-act="depthPos" data-p="${p}">${p} <span class="dim">${(d.depth[p] || []).length}</span></span>`).join('')}</div>
-    <div class="grid g2"><div class="card"><h2>${depthPos} depth</h2>${list.map((p, i) => `${i === startersAt(depthPos) ? '<div class="tiny muted cond" style="margin-top:8px;text-transform:uppercase;letter-spacing:.5px">Backups</div>' : ''}<div class="row ${i < startersAt(depthPos) ? 'starter' : ''}" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:6px 0"><b class="cond" style="width:44px;font-size:16px" title="${i < startersAt(depthPos) ? 'Starter' : 'Backup'}">${slotLabel(depthPos, i)}</b>${pname(p)}<span>${injBadge(p)}</span>${ovr(p.ovr)}${d.mine ? `<span class="btn-group"><button class="btn sm" data-act="depthMove" data-i="${i}" data-d="-1" title="Move up">▲</button><button class="btn sm" data-act="depthMove" data-i="${i}" data-d="1" title="Move down">▼</button><button class="btn sm" data-act="depthRemove" data-i="${i}" title="Remove from this position">✕</button></span>` : ''}</div>`).join('') || '<div class="muted">Empty.</div>'}
-      <p class="small muted">Starters (above "Backups") play most snaps: your #1 tackle is the left tackle and #2 the right tackle, likewise LG/RG, LE/RE and FS/SS. Injured or holdout players are skipped on game day. The slot receiver, nickel corner and Mike/Will/Sam are set on Adjust Lineup › Packages & Roles.</p></div>
+    <div class="chips" style="margin-bottom:14px">${allPos.map((p) => `<span class="pill ${p === depthPos ? 'on' : ''}" data-act="depthPos" data-p="${p}" title="${esc(SPLIT_NAMES[p] || p)}">${p} <span class="dim">${depthList(d, p).length}</span></span>`).join('')}</div>
+    <div class="grid g2"><div class="card"><h2>${esc(SPLIT_NAMES[depthPos] || depthPos)} depth</h2>${SPLIT[depthPos] ? `<div class="tiny muted" style="margin:-4px 0 8px">The ${SPLIT_NAMES[depthPos]} starter is listed first. Backups are shared with the other side; moving the other side's starter here swaps them.</div>` : ''}${list.map((p, i) => `${i === startersAt(depthPos) ? '<div class="tiny muted cond" style="margin-top:8px;text-transform:uppercase;letter-spacing:.5px">Backups</div>' : ''}<div class="row ${i < startersAt(depthPos) ? 'starter' : ''}" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:6px 0"><b class="cond" style="width:44px;font-size:16px" title="${i < startersAt(depthPos) ? 'Starter' : 'Backup'}">${depthLabel(depthPos, i)}</b>${pname(p)}<span>${injBadge(p)}</span>${ovr(p.ovr)}${d.mine ? `<span class="btn-group"><button class="btn sm" data-act="depthMove" data-i="${i}" data-d="-1" title="Move up">▲</button><button class="btn sm" data-act="depthMove" data-i="${i}" data-d="1" title="Move down">▼</button><button class="btn sm" data-act="depthRemove" data-i="${i}" title="Remove from this position">✕</button></span>` : ''}</div>`).join('') || '<div class="muted">Empty.</div>'}
+      <p class="small muted">The starter (above "Backups") plays most snaps. Left and right tackle, guard and end, and free and strong safety are separate spots, each with its own starter. Injured or holdout players are skipped on game day. The slot receiver, nickel corner and Mike/Will/Sam are set on Adjust Lineup › Packages & Roles.</p></div>
     <div class="card"><h2>Add players</h2><div class="scroll">${pool.map((p) => `<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding:5px 0">${pname(p)}${ovr(p.ovr)}${d.mine ? `<button class="btn sm" data-act="depthAdd" data-pid="${esc(p.pid)}" title="Add to the bottom of this position's depth">Add</button>` : ''}</div>`).join('')}</div></div></div>`;
 };
 ACTIONS.depthPos = (el) => { depthPos = el.dataset.p; rerender(); };
-async function depthUpdate(fn) { const d = await call('depth', { tid: session.tid }); const ids = (d.depth[depthPos] || []).map((p) => p.pid); fn(ids); await act('setDepthChart', { tid: session.tid, pos: depthPos, pids: ids }); }
+async function depthUpdate(fn) {
+  const d = await call('depth', { tid: session.tid });
+  const ids = depthList(d, depthPos).map((p) => p.pid);
+  fn(ids);
+  if (SPLIT[depthPos]) { const [par, side] = SPLIT[depthPos]; await act('setDepthChart', { tid: session.tid, pos: par, pids: mergeSplit(d.depth[par] || [], side, ids) }); }
+  else await act('setDepthChart', { tid: session.tid, pos: depthPos, pids: ids });
+}
 ACTIONS.depthMove = (el) => depthUpdate((ids) => { const i = +el.dataset.i, j = i + +el.dataset.d; if (j >= 0 && j < ids.length) [ids[i], ids[j]] = [ids[j], ids[i]]; });
 ACTIONS.depthRemove = (el) => depthUpdate((ids) => { ids.splice(+el.dataset.i, 1); });
 ACTIONS.depthAdd = (el) => depthUpdate((ids) => { ids.push(el.dataset.pid); });
