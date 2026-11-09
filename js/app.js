@@ -170,7 +170,7 @@ function drawTop() {
 }
 const SECTIONS = [
   { id: 'home', label: 'Hub', pages: [['home', 'Franchise Hub']] },
-  { id: 'team', label: 'My Team', pages: [['roster', 'Roster'], ['depth', 'Depth Chart'], ['lineup', 'Adjust Lineup'], ['prep', 'Week Prep'], ['schedule', 'Schedule'], ['cap', 'Salary Cap & Contracts'], ['staff', 'Coaching Staff'], ['owner', 'Owner & Finances']] },
+  { id: 'team', label: 'My Team', pages: [['roster', 'Roster'], ['depth', 'Depth Chart'], ['lineup', 'Adjust Lineup'], ['prep', 'Week Prep'], ['stories', 'Storylines'], ['schedule', 'Schedule'], ['cap', 'Salary Cap & Contracts'], ['staff', 'Coaching Staff'], ['owner', 'Owner & Finances']] },
   { id: 'moves', label: 'Transactions', pages: [['trade', 'Trade Center'], ['finder', 'Trade Finder'], ['offers', 'Trade Offers'], ['fa', 'Free Agency'], ['draft', 'Draft & Scouting'], ['fantasy', 'Fantasy Draft']] },
   { id: 'league', label: 'League', pages: [['standings', 'Standings & Playoffs'], ['recap', 'Weekly Recap'], ['awards', 'Awards Race'], ['stats', 'Stats & Leaders'], ['teams', 'Teams'], ['news', 'News'], ['rules', 'League Meeting'], ['history', 'NFL History']] },
   { id: 'office', label: 'Office', pages: [['franchise', 'Relocate & Rebrand'], ['settings', 'Settings & Sliders'], ['online', 'Play Online'], ['start', 'Saves / New League'], ['tutorial', 'Tutorial']] },

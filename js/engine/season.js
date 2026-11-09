@@ -22,6 +22,7 @@ import { addSeasonPicks, setExpectations } from './league.js';
 import { autoDepth, rosterCounts } from './roster.js';
 import { weeklyEvents } from './events.js';
 import { afterPrep } from './prep.js';
+import { generateStories, storiesBeforeWeek, storiesAfterWeek, storiesSeasonEnd } from './storylines.js';
 
 export { generateSchedule };
 
@@ -107,13 +108,17 @@ export function simWeek() {
     if (bad) return { error: bad };
   }
   const games = Lg.games.filter((g) => g.s === m.season && g.type === 'REG' && g.w === m.week && !g.played);
+  for (const ut of m.userTids) generateStories(ut); // (no-op once this season's stories exist)
+  storiesBeforeWeek();
   for (const g of games) playGame(g);
   afterWeek();
+  storiesAfterWeek();
   if (m.week >= (Lg.rules.weeks || 18)) {
     // regular season complete
     computeStandings();
     seasonAwards(Lg.standingsCache);
     startPlayoffs();
+    storiesSeasonEnd('regular');
   } else m.week++;
   return { ok: true, played: games.length };
 }
@@ -322,7 +327,8 @@ function simPlayoffRound() {
   }
   weeklyInjuryUpdate();
   for (const t of Lg.teams) aiWeekly(t.tid);
-  if (round === 'SB') { enterSeasonEnd(); return { ok: true, phase: 'SEASON_END' }; }
+  storiesAfterWeek();
+  if (round === 'SB') { storiesSeasonEnd('final'); enterSeasonEnd(); return { ok: true, phase: 'SEASON_END' }; }
   const next = { WC: 'DIV', DIV: 'CONF', CONF: 'SB' }[round];
   P.round = next;
   Lg.meta.week = { DIV: 20, CONF: 21, SB: 23 }[next];
@@ -495,6 +501,7 @@ function enterPreseason() {
   ensurePreseasonGames();
   for (const p of Object.values(Lg.players)) if (p.r) p.r.ovrStart = p.r.ovr;
   refreshTeamRef(0.6); // team overalls compare to this year's league (mostly), so they track who got better or worse
+  for (const ut of Lg.meta.userTids) generateStories(ut);
 }
 
 // Advance one step (week, playoff round, FA day, or phase)

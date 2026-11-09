@@ -498,3 +498,16 @@ input[type=color] { width: 100%; height: 34px; padding: 2px; background: var(--p
 .grade.big { font-size: 30px; padding: 2px 14px; }
 .grade.g-A { color: #22c55e; border-color: rgba(34,197,94,.5); } .grade.g-B { color: #3b82f6; border-color: rgba(59,130,246,.5); }
 .grade.g-C { color: #eab308; border-color: rgba(234,179,8,.5); } .grade.g-D { color: #ef4444; border-color: rgba(239,68,68,.5); }
+
+/* ---------- storylines */
+.story-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.story.done { border-color: rgba(34,197,94,.45); }
+.story.failed { opacity: .82; }
+.sbar { height: 7px; background: var(--bg2); border-radius: 99px; overflow: hidden; margin: 4px 0 2px; }
+.sbar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.story.done .sbar i, .story-mini.done .sbar i { background: #22c55e; }
+.chaps { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; border-top: 1px solid var(--line); padding-top: 8px; }
+.chap { display: grid; grid-template-columns: 70px 1fr; gap: 6px; } .chap.bad .small { color: var(--muted); }
+.story-mini { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; }
+.story-mini:last-child { border-bottom: 0; }
+.si { font-size: 20px; width: 28px; text-align: center; } .si.big { font-size: 32px; width: 48px; }

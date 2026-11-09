@@ -5,6 +5,7 @@ import { awardScores } from './awards.js';
 import { CITIES, BRANDS, crest, relocateTeam, rebrandTeam } from './relocation.js';
 import { faTick, faStatus } from './fa.js';
 import { DEV, DEV_INFO, longevityLabel } from './dev.js';
+import { generateStories, storiesFor } from './storylines.js';
 import { PREP_FOCUS, PREP_INT, prepActive, prepFor, prepOptions, setUserPrep, unitProfile, gradeFor } from './prep.js';
 import { G, age, capFor, clamp, setRngState, rngState, fmtMoney, isUser, news, transaction } from './core.js';
 import { POSITIONS, POS_NAMES, PHASE_LABEL, ROUND_LABEL, DEFAULT_SLIDERS, SLIDER_INFO, DEPTH_SLOTS } from './const.js';
@@ -152,6 +153,7 @@ export function dashboard({ tid }, ctx) {
     bye: m.phase === 'REGULAR_SEASON' && !Lg.games.some((g) => g.s === m.season && g.type === 'REG' && g.w === m.week && (g.h === tid || g.a === tid)) ? m.week : null,
     byeWeek: byeWeek(tid, m.season),
     todo: todoList(tid, ctx),
+    stories: (() => { const all = storiesFor(tid); const act = all.filter((x) => x.status === 'active'); const recent = all.filter((x) => x.status !== 'active' && x.type !== 'revenge').slice(-2); return [...act.filter((x) => x.type === 'revenge'), ...act.filter((x) => x.type !== 'revenge'), ...recent].slice(0, 4).map((x) => ({ id: x.id, icon: x.icon, title: x.title, status: x.status, pct: x.pct, valueTxt: x.valueTxt, targetTxt: x.targetTxt, goal: x.goal.l, last: x.chapters.at(-1)?.text, player: x.player })); })(),
     prep: (() => { if (!prepActive()) return null; const g = nextPrepGame(tid); if (!g) return null; const pr = prepFor(tid, g.h === tid ? g.a : g.h); return { label: PREP_FOCUS[pr.focus].label, grade: pr.grade, auto: !!pr.auto }; })(),
     recapWeek: lastPlayedWeek(),
   };
@@ -995,4 +997,16 @@ export function setPrep({ tid, focus, int }, ctx) {
   const opp = g.h === tid ? g.a : g.h;
   const pr = setUserPrep(tid, opp, focus, int);
   return { ok: true, grade: pr.grade, focus: pr.focus, int: pr.int };
+}
+
+// ------------------------------------------------------------------ storylines
+export function storylines({ tid, season } = {}, ctx = {}) {
+  const Lg = L();
+  tid = tid ?? ctx.tid;
+  const s = season ?? Lg.meta.season;
+  if (s === Lg.meta.season && !(Lg.fantasy && !Lg.fantasy.done)) generateStories(tid);
+  const all = storiesFor(tid, s);
+  const seasons = [...new Set((Lg.stories || []).filter((x) => x.tid === tid).map((x) => x.s))].sort((a, b) => b - a);
+  return { season: s, seasons, team: teamLite(T(tid)), active: all.filter((x) => x.status === 'active'), done: all.filter((x) => x.status !== 'active'),
+    momentum: Lg.momentum?.[tid] || 0 };
 }

@@ -1,5 +1,5 @@
 {
-"v": "fc73391c471a",
+"v": "dd4caf5fb6e5",
 "files": [
 "css/style.css",
 "data/league.json",
@@ -33,6 +33,7 @@
 "js/engine/season.js",
 "js/engine/sim.js",
 "js/engine/standings.js",
+"js/engine/storylines.js",
 "js/engine/trade.js",
 "js/help.js",
 "js/pages.js",

@@ -86,6 +86,7 @@ PAGES3.home = async () => {
         ${T('#/awards', '🥇', 'Awards Race', 'MVP, OPOY, DPOY…', 'Who is leading each award right now')}
       </div>
       ${d.expiring.length ? `<div class="card" style="border-color:var(--warn)"><div class="card-h"><h2>Expiring contracts (${d.expiring.length})</h2><span class="tiny muted">${d.tagUsed ? 'Tag used this year' : 'One franchise or transition tag available'}</span></div><div class="small muted" style="margin-bottom:6px">Re-sign, tag or let them walk. Anyone unsigned when free agency opens hits the open market.</div>${d.expiring.map((p) => `<div class="mini-row">${pname(p)}${ovr(p.ovr)}${devBadge(p.dev)}<span class="small muted">Age ${p.age} · asks ${money(p.ask)}/yr</span><span class="r"><button class="btn sm pri" data-act="negotiate" data-pid="${esc(p.pid)}" data-mode="resign" title="Open contract talks">Negotiate</button></span></div>`).join('')}</div>` : ''}
+      ${d.stories?.length ? `<div class="card"><div class="card-h"><h2>Storylines</h2><a class="small" href="#/stories" title="Every story this season, chapter by chapter">All stories ›</a></div>${d.stories.map(storyMini).join('')}</div>` : ''}
       ${['PLAYOFFS', 'SEASON_END'].includes(APP.header.phase) ? bracketHtml(rc.bracket, t.tid) : ''}
       ${recapMini}
     </div>
@@ -438,3 +439,26 @@ ACTIONS.prepInt = async (el) => {
   const d = await call('prepInfo', { tid: session.tid });
   await act('setPrep', { tid: session.tid, focus: d.choice.focus, int: el.dataset.i });
 };
+
+// ===================================================================== STORYLINES
+const ST_BADGE = { active: '', done: '<span class="badge grn">COMPLETE</span>', failed: '<span class="badge">ENDED</span>' };
+function storyMini(x) {
+  return `<a class="story-mini ${x.status}" href="#/stories" title="${esc(x.last || '')}"><span class="si">${x.icon}</span><div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between;gap:6px"><b class="small">${esc(x.title)}</b>${ST_BADGE[x.status]}</div>
+    <div class="sbar"><i style="width:${x.pct}%"></i></div><div class="tiny muted">${esc(x.goal)}: ${x.valueTxt} / ${x.targetTxt}</div></div></a>`;
+}
+let storySeason = null;
+PAGES3.stories = async () => {
+  const d = await call('storylines', { tid: session.tid, season: storySeason ?? undefined });
+  const chap = (c) => `<div class="chap ${c.good === false ? 'bad' : ''}"><span class="tiny dim">${c.ph === 'PLAYOFFS' ? 'Playoffs' : c.ph === 'REGULAR_SEASON' ? `Wk ${c.w}` : c.ph === 'PRESEASON' ? 'Preseason' : ''}</span><div class="small">${esc(c.text)}</div></div>`;
+  const card = (x) => `<div class="card story ${x.status}"><div class="row" style="gap:10px;align-items:center">${x.player ? hs(x.player.hs, 'md', x.player) : `<span class="si big">${x.icon}</span>`}<div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between;gap:8px"><h3 style="margin:0">${x.player ? `${x.icon} ` : ""}${esc(x.title)}</h3>${ST_BADGE[x.status]}</div>
+      ${x.player ? `<div class="tiny muted"><a href="#/player/${esc(x.player.pid)}">${esc(x.player.name)}</a> · ${x.player.pos}</div>` : ''}</div></div>
+    <div class="row" style="gap:10px;margin:10px 0 4px;align-items:center"><span class="small" style="white-space:nowrap">Goal: ${esc(x.goal.l)}</span><div class="sbar" style="flex:1"><i style="width:${x.pct}%"></i></div><b class="cond">${x.valueTxt} / ${x.targetTxt}</b></div>
+    <div class="chaps">${[...x.chapters].reverse().map(chap).join('')}</div></div>`;
+  const sel = d.seasons.length > 1 ? `<select data-change="storySeason">${d.seasons.map((s) => `<option ${s === d.season ? 'selected' : ''}>${s}</option>`).join('')}</select>` : '';
+  return `<div class="page-h"><h1>Storylines</h1><span class="sub">${d.season} · ${esc(d.team.region)} ${esc(d.team.name)}</span><div class="right">${sel}</div></div>
+    <div class="small muted" style="margin-bottom:12px">Stories about the people on your team. New chapters unlock as things happen in your games. Reaching a goal lifts the players' morale and gives the team a little momentum for its next game.${d.momentum ? ` <b>Momentum banked for your next game.</b>` : ''}</div>
+    ${d.active.length ? `<h2 class="cond">In progress</h2><div class="story-grid">${d.active.map(card).join('')}</div>` : ''}
+    ${d.done.length ? `<h2 class="cond" style="margin-top:16px">Finished</h2><div class="story-grid">${d.done.map(card).join('')}</div>` : ''}
+    ${!d.active.length && !d.done.length ? '<div class="card muted">Your storylines for the season are written when the preseason starts.</div>' : ''}`;
+};
+ACTIONS.storySeason = (el) => { storySeason = +el.value; rerender(); };

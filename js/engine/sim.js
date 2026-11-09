@@ -4,6 +4,7 @@ import { injuryTypeFor } from './injuries.js';
 import { OFF_SCHEMES, DEF_SCHEMES, teamScheme, teamFit, resolveRoles } from './schemes.js';
 import { prepFor, prepEffects } from './prep.js';
 import { teamOvr } from './ratings.js';
+import { takeMomentum } from './storylines.js';
 
 const OFF_SLOTS = { QB: 1, RB: 2, WR: 4, TE: 2, OT: 2, OG: 2, C: 1, FB: 1 };
 const DEF_SLOTS = { EDGE: 3, DT: 3, LB: 3, CB: 4, S: 2 };
@@ -188,7 +189,9 @@ export function simGame(game, opts = {}) {
   // every game is still its own roll of the dice
   const dq = teamOvr(game.h).raw - teamOvr(game.a).raw;
   const edge = dq * QUALITY_EDGE / (1 + Math.abs(dq) / 2.5) / 2; // tapers off for mismatches, so nobody runs the table
-  const form = [gauss(0, 1.4 * upset) + homeAdv / 2 + sf(game.h) + edge, gauss(0, 1.4 * upset) - homeAdv / 2 + sf(game.a) - edge];
+  // storyline momentum (a goal just reached) carries into the next real game
+  const mo = game.type === 'PRE' ? [0, 0] : [takeMomentum(game.h) * 0.6, takeMomentum(game.a) * 0.6];
+  const form = [gauss(0, 1.4 * upset) + homeAdv / 2 + sf(game.h) + edge + mo[0], gauss(0, 1.4 * upset) - homeAdv / 2 + sf(game.a) - edge + mo[1]];
   const scoringAdj = (sl.scoring ?? 1);
 
   const coin = chance(0.5) ? 0 : 1; // team that receives first

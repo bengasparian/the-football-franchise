@@ -33,7 +33,7 @@ export async function call(method, args = {}) {
 }
 
 // ---------------- online (PeerJS)
-const GUEST_OK = new Set(['header', 'dashboard', 'teams', 'roster', 'playerDetail', 'depth', 'setDepthChart', 'autoDepthChart', 'lineupInfo', 'setScheme', 'setRole', 'setInjAuto', 'setAutoScout', 'prepInfo', 'setPrep', 'standings', 'schedule', 'game', 'playerStats',
+const GUEST_OK = new Set(['header', 'dashboard', 'teams', 'roster', 'playerDetail', 'depth', 'setDepthChart', 'autoDepthChart', 'lineupInfo', 'setScheme', 'setRole', 'setInjAuto', 'setAutoScout', 'prepInfo', 'setPrep', 'storylines', 'standings', 'schedule', 'game', 'playerStats',
   'leaders', 'teamStats', 'newsFeed', 'capSheet', 'releaseP', 'restructureP', 'tagP', 'optionP', 'declineOption', 'irP', 'activateP', 'toPS', 'promoteP', 'autoCutdown', 'toggleBlock',
   'negotiateP', 'faList', 'withdrawOffer', 'signMin', 'signToPS', 'tradeAssets', 'tradeEval', 'tradePropose', 'tradeMakeItWork', 'tradeFind', 'tradeOffers', 'respondOffer',
   'draftBoard', 'scout', 'boardToggle', 'boardMove', 'draftState', 'draftPick', 'draftAuto', 'fantasyState', 'fantasyMakePick', 'fantasyAutoMine', 'staff', 'hire', 'fire',
