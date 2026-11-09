@@ -152,11 +152,14 @@ function drawTop() {
   const h = APP.header;
   const top = $('#top');
   if (!h) { top.innerHTML = `<div class="brand"><span class="the">THE</span><span>Football <b>Franchise</b></span></div><div class="spacer"></div>${net.mode === 'guest' ? `<span class="badge blu">Online · Room ${esc(net.code)}</span>` : ''}`; drawNav(); return; }
-  const multi = h.userTids.length > 1 && net.mode !== 'guest';
+  // the host's team switcher only lists teams the host runs, never a friend's team
+  const guestTids = new Set(net.mode === 'host' ? [...net.conns.values()].map((c) => c.tid).filter((t) => t != null) : []);
+  const myTids = h.userTids.filter((t) => !guestTids.has(t));
+  const multi = myTids.length > 1 && net.mode !== 'guest';
   const stage = h.phase === 'REGULAR_SEASON' ? `WEEK ${h.week}${h.bye ? ' · BYE' : ''}` : h.phase === 'PRESEASON' ? `PRESEASON WK ${Math.max(1, h.week)}` : h.phase === 'FREE_AGENCY' ? `FA DAY ${h.faDay ?? 0} / 5` : h.phase === 'PLAYOFFS' ? esc(h.roundLabel || 'PLAYOFFS').toUpperCase() : esc(h.phaseLabel).toUpperCase();
   top.innerHTML = `
     <a class="brand" href="#/home" title="Franchise Hub"><span class="the">THE</span><span class="full">Football <b>Franchise</b></span></a>
-    <div class="teamid">${logo(h.team.logo, 'md')}<div><div class="tn">${multi ? `<select data-change="switchTeam" class="teamsel" title="Switch which of your teams you are managing">${h.userTids.map((t) => `<option value="${t}" ${t === session.tid ? 'selected' : ''}>${esc(APP.teams?.[t] ? APP.teams[t].region + ' ' + APP.teams[t].name : t)}</option>`).join('')}</select>` : esc(h.team.region + ' ' + h.team.name)}</div><div class="rec">${esc(h.rec || '0-0')} · ${h.season}</div></div></div>
+    <div class="teamid">${logo(h.team.logo, 'md')}<div><div class="tn">${multi ? `<select data-change="switchTeam" class="teamsel" title="Switch which of your teams you are managing">${myTids.map((t) => `<option value="${t}" ${t === session.tid ? 'selected' : ''}>${esc(APP.teams?.[t] ? APP.teams[t].region + ' ' + APP.teams[t].name : t)}</option>`).join('')}</select>` : esc(h.team.region + ' ' + h.team.name)}</div><div class="rec">${esc(h.rec || '0-0')} · ${h.season}</div></div></div>
     <div class="stage" title="Where you are in the NFL calendar"><span>${stage}</span><small>${esc(h.phaseLabel)}</small></div>
     <div class="capchip" title="Cap space for the current league year">CAP SPACE <b class="${h.capSpace < 0 ? 'bad' : ''}">${money(h.capSpace)}</b></div>
     <div class="spacer"></div>
@@ -375,7 +378,7 @@ async function advanceForEveryone() {
 function netEvent(ev) {
   if (ev.t === 'allReady') { advanceForEveryone(); return; }
   if (ev.t === 'update') { if (APP.route !== 'online') rerender(); else refreshHeader(); }
-  if (ev.t === 'status' || ev.t === 'chat' || ev.t === 'claimed') { APP.topSig = null; if (APP.route === 'online') renderOnline(); else drawTop(); }
+  if (ev.t === 'status' || ev.t === 'chat' || ev.t === 'claimed') { APP.topSig = null; drawTop(); if (APP.route === 'online') renderOnline(); }
   if (ev.t === 'claimed') { if (ev.error) toast(esc(ev.error), 'error'); else { toast('Team claimed! Welcome to the front office.', 'good'); loadTeamsCache().then(() => { location.hash = '#/home'; }); } }
   if (ev.t === 'welcome') { net.welcome = ev; }
   if (ev.t === 'error') toast(esc(ev.text), 'error');

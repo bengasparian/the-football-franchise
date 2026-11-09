@@ -99,6 +99,7 @@ async function hostHandle(conn, msg) {
     conn.send({ t: 'claimed', tid: msg.tid });
     addChat('system', `${me.name} is now the GM of ${me.abbr}.`);
     broadcast({ t: 'update' });
+    broadcastStatus();
     emit({ t: 'update' }); emit({ t: 'status' });
     return;
   }
