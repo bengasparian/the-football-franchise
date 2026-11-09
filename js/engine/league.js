@@ -261,7 +261,7 @@ export function setExpectations() {
   // hidden season-long variance the projections can't see: scheme fit, locker room, health luck, a QB
   // taking a leap or regressing. This is why some projected contenders flop and some sleepers break out.
   const up = L.settings?.sliders?.upsetFactor ?? 1;
-  for (const t of L.teams) t.sf = clamp(gauss(0, 1.3 * up), -3.5 * up, 3.5 * up);
+  for (const t of L.teams) t.sf = clamp(gauss(0, 0.9 * up), -2.5 * up, 2.5 * up);
 }
 export function rosterStrength(tid) {
   const L = G.L;

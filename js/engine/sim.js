@@ -3,6 +3,7 @@ import { G, rnd, gauss, clamp, chance, wpick, interp, pick } from './core.js';
 import { injuryTypeFor } from './injuries.js';
 import { OFF_SCHEMES, DEF_SCHEMES, teamScheme, teamFit, resolveRoles } from './schemes.js';
 import { prepFor, prepEffects } from './prep.js';
+import { teamOvr } from './ratings.js';
 
 const OFF_SLOTS = { QB: 1, RB: 2, WR: 4, TE: 2, OT: 2, OG: 2, C: 1, FB: 1 };
 const DEF_SLOTS = { EDGE: 3, DT: 3, LB: 3, CB: 4, S: 2 };
@@ -10,7 +11,8 @@ const DEF_SLOTS = { EDGE: 3, DT: 3, LB: 3, CB: 4, S: 2 };
 // NFL parity: the gap between a great and an average player matters, but less than raw ratings
 // suggest (scheme, play-calling, health and luck even things out). Attributes are pulled toward the
 // league average for that position before they hit the play engine.
-const PARITY = 0.86;
+const PARITY = 0.9;
+const QUALITY_EDGE = 0.75; // extra game-day form per point of raw team rating difference
 let MEAN = { key: null, m: {} };
 function attrMeans() {
   const Lg = G.L;
@@ -182,7 +184,11 @@ export function simGame(game, opts = {}) {
   const upset = sl.upsetFactor ?? 1;
   // game-day form: each team has a small random form swing (any-given-Sunday)
   const sf = (tid) => (G.L.teams[tid]?.sf || 0);
-  const form = [gauss(0, 2.0 * upset) + homeAdv / 2 + sf(game.h), gauss(0, 2.0 * upset) - homeAdv / 2 + sf(game.a)];
+  // the better team (healthy lineup on game day) gets a little extra edge, so talent wins out a bit more often;
+  // every game is still its own roll of the dice
+  const dq = teamOvr(game.h).raw - teamOvr(game.a).raw;
+  const edge = dq * QUALITY_EDGE / (1 + Math.abs(dq) / 2.5) / 2; // tapers off for mismatches, so nobody runs the table
+  const form = [gauss(0, 1.4 * upset) + homeAdv / 2 + sf(game.h) + edge, gauss(0, 1.4 * upset) - homeAdv / 2 + sf(game.a) - edge];
   const scoringAdj = (sl.scoring ?? 1);
 
   const coin = chance(0.5) ? 0 : 1; // team that receives first
