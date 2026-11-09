@@ -658,51 +658,82 @@ def week_for_date(team, date):
 
 # Official expected return dates (ESPN's injury report). Best source when reachable; the estimate is the fallback.
 ESPN_RET = {}
+def _get_json(url, timeout=30):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 the-football-franchise-data"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+def _espn_rec(it, team_name=None):
+    det = it.get("details") or {}
+    com = " ".join(x for x in (it.get("shortComment"), it.get("longComment")) if isinstance(x, str))
+    st = it.get("status")
+    if isinstance(st, dict): st = st.get("name") or st.get("description")
+    typ = it.get("type")
+    rec = {"date": (det.get("returnDate") or "")[:10] or None, "status": st, "type": det.get("type") or (typ.get("description") if isinstance(typ, dict) else None), "com": com, "team": team_name}
+    m = _re.search(r"(?:until|before|by|in|for|around|return(?:ing)?(?: in| for)?)\s+Week\s+(\d{1,2})", com, _re.I)
+    if m: rec["cweek"] = int(m.group(1))
+    # season-ending only when it's definite ("could miss the rest of the season" is not)
+    for sent in _re.split(r"(?<=[.!?])\s+", com):
+        if _re.search(r"season-ending|out for the (?:rest of the )?season|(?:miss|out for) the (?:rest|remainder) of the (?:\d{4} )?season", sent, _re.I) and not _re.search(r"\b(could|may|might|possibl\w*|potential\w*|chance|if|unless|fear\w*|risk)\b", sent, _re.I):
+            rec["se"] = True
+    return rec
+# 1) per-team injury lists from ESPN's core API: complete (the league-wide feed stops at 25 per team)
 try:
-    req = urllib.request.Request("https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries", headers={"User-Agent": "Mozilla/5.0 the-football-franchise-data"})
-    with urllib.request.urlopen(req, timeout=40) as r:
-        ej = json.loads(r.read().decode())
+    from concurrent.futures import ThreadPoolExecutor
+    teams_j = _get_json("https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams")
+    team_ids = [(t["team"]["id"], t["team"].get("displayName")) for lg in teams_j["sports"][0]["leagues"] for t in lg["teams"]]
+    refs = []
+    for tid_, tname in team_ids:
+        try:
+            j = _get_json(f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{tid_}/injuries?limit=300")
+            refs += [(x["$ref"], tname) for x in j.get("items", []) if "$ref" in x]
+        except Exception as e:
+            print("  espn team injuries failed", tid_, e, flush=True)
+    def _one(rt):
+        ref, tname = rt
+        try:
+            it = _get_json(ref.replace("http://", "https://"))
+            m3 = _re.search(r"/athletes/(\d+)", ref) or _re.search(r"/athletes/(\d+)", json.dumps(it.get("athlete", {})))
+            return (m3.group(1) if m3 else None, _espn_rec(it, tname))
+        except Exception:
+            return (None, None)
+    with ThreadPoolExecutor(16) as ex:
+        for aid, rec in ex.map(_one, refs):
+            if aid and rec:
+                old = ESPN_RET.get("id:" + aid)
+                if not old or (rec["date"] and not old["date"]): ESPN_RET["id:" + aid] = rec  # keep the most useful entry
+    print("espn team injury lists:", len(team_ids), "teams,", len(refs), "entries,", len(ESPN_RET), "players", flush=True)
+except Exception as e:
+    print("espn team injury lists unavailable:", e, flush=True)
+# 2) league-wide feed (has names, used as a fallback match)
+try:
+    ej = _get_json("https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries", 40)
     for tb in ej.get("injuries", []):
         for it in tb.get("injuries", []):
             ath = it.get("athlete") or {}
+            rec = _espn_rec(it, tb.get("displayName"))
             nm = _norm(ath.get("displayName") or "")
-            det = it.get("details") or {}
-            com = " ".join(x for x in (it.get("shortComment"), it.get("longComment")) if isinstance(x, str))
-            rec = {"date": (det.get("returnDate") or "")[:10] or None, "status": it.get("status"), "type": det.get("type"), "com": com,
-                   "team": tb.get("displayName")}
-            m = _re.search(r"(?:until|before|by|in|for|around|return(?:ing)?(?: in| for)?)\s+Week\s+(\d{1,2})", com, _re.I)
-            if m: rec["cweek"] = int(m.group(1))
-            # season-ending only when it's definite ("could miss the rest of the season" is not)
-            for sent in _re.split(r"(?<=[.!?])\s+", com):
-                if _re.search(r"season-ending|out for the (?:rest of the )?season|(?:miss|out for) the (?:rest|remainder) of the (?:\d{4} )?season", sent, _re.I) and not _re.search(r"\b(could|may|might|possibl\w*|potential\w*|chance|if|unless|fear\w*|risk)\b", sent, _re.I):
-                    rec["se"] = True
-            if rec["date"]: rec.pop("se", None)  # a return date beats a vague season-ending note
-            if nm: ESPN_RET[nm] = rec
-            # ESPN's own athlete id (nflverse rosters carry it too), the most reliable match
+            if nm: ESPN_RET.setdefault(nm, rec)
             aid = str(ath.get("id") or "")
             if not aid:
                 for lk in ath.get("links") or []:
                     m2 = _re.search(r"/id/(\d+)", str(lk.get("href", "")))
                     if m2: aid = m2.group(1); break
-            if aid: ESPN_RET["id:" + aid] = rec
-    print("espn injuries", len(ESPN_RET), "with return dates", sum(1 for v in ESPN_RET.values() if v["date"]), "with a Week in the note", sum(1 for v in ESPN_RET.values() if v.get("cweek")), "season-ending", sum(1 for v in ESPN_RET.values() if v.get("se")), flush=True)
-    _sample = [(k, v["status"], v["date"], (v["com"] or "")[:90]) for k, v in list(ESPN_RET.items()) if v["status"] and "reserve" in str(v["status"]).lower()][:6]
-    for x in _sample: print("  espn IR sample", x, flush=True)
+            if aid: ESPN_RET.setdefault("id:" + aid, rec)
 except Exception as e:
-    print("espn injuries unavailable:", e, flush=True)
+    print("espn injuries feed unavailable:", e, flush=True)
+_vals = [v for k, v in ESPN_RET.items() if k.startswith("id:")]
+print("espn injuries", len(_vals), "with return dates", sum(1 for v in _vals if v["date"]), "with a Week in the note", sum(1 for v in _vals if v.get("cweek")), "season-ending", sum(1 for v in _vals if v.get("se")), flush=True)
 
-# first week of each player's current reserve stint (IR / PUP), from the weekly rosters
-IR_START = {}
-_rw = D["roster_weekly"]
-_rw = _rw[_rw.season == SEASON] if "season" in _rw else _rw
-for gid_, grp in _rw.sort_values("week").groupby("gsis_id"):
-    st = list(zip(grp.week.astype(int), grp.status.astype(str)))
-    if not st or st[-1][1] != "RES": continue
-    start = st[-1][0]
-    for w_, s_ in reversed(st):
-        if s_ != "RES": break
-        start = w_
-    IR_START[gid_] = start
+# a return date after the regular season: out until the playoffs, or (well past them) the season is over
+_LAST_REG = str(_sg.gameday.max()) if len(_sg) else None
+def weeks_out_for_date(team, date):
+    w = week_for_date(team, date)
+    if w < 60: return max(0, w - CUR_WEEK)
+    if not _LAST_REG: return 99
+    d0 = datetime.date.fromisoformat(_LAST_REG[:10]); d1 = datetime.date.fromisoformat(date[:10])
+    extra = math.ceil((d1 - d0).days / 7)
+    if extra > 5: return 99
+    return (18 - CUR_WEEK + 1) + extra
 
 def espn_for(r):
     eid = getattr(r, "espn_id", None)
@@ -728,11 +759,13 @@ def injury_status(gid, name, team, on_ir, default_type, e=None):
     if e and e.get("type") and out["type"] == "Undisclosed": out["type"] = e["type"]
     if e and e.get("se"):
         out.update({"wk": 99, "se": True}); out["src"] = "report"; return out
-    back = None
-    if e and e.get("date"): back = week_for_date(team, e["date"])
-    elif e and e.get("cweek"): back = e["cweek"]
-    if back is not None and back < 60:
-        out["wk"] = max(0, back - CUR_WEEK); out["src"] = "report"
+    wk_ = None
+    if e and e.get("date"): wk_ = weeks_out_for_date(team, e["date"])
+    elif e and e.get("cweek"): wk_ = max(0, e["cweek"] - CUR_WEEK)
+    if wk_ is not None and wk_ >= 99:
+        out.update({"wk": 99, "se": True}); out["src"] = "report"; return out
+    if wk_ is not None:
+        out["wk"] = wk_; out["src"] = "report"
     else:
         o = ir_outlook(t)
         if o.get("se"): out.update({"wk": 99, "se": True}); return out
@@ -832,8 +865,10 @@ for p in players:
         o["inj"] = INJ[gid]
         e = espn_for(r)
         if e and e.get("date"):
-            w = week_for_date(fix_team(r.team), e["date"])
-            if w < 60: o["inj"]["wk"] = max(o["inj"]["wk"] if w > CUR_WEEK else 0, w - CUR_WEEK); o["inj"]["src"] = "report"
+            wk_ = weeks_out_for_date(fix_team(r.team), e["date"])
+            if wk_ >= 99: o["inj"].update({"wk": 99, "se": True})
+            else: o["inj"]["wk"] = wk_
+            o["inj"]["src"] = "report"
     if r.gstatus == "IR":
         o["inj"] = injury_status(gid, nm_full, fix_team(r.team), True, "Undisclosed", espn_for(r))
     car = career(gid)
@@ -917,7 +952,7 @@ _miss = [f'{o.get("fn")} {o.get("ln")}' for o in _ir if o["inj"].get("src") != "
 if ESPN_RET: print("  IR players without an official date (estimated):", ", ".join(_miss), flush=True)
 if ESPN_RET:
     for o in sorted([o for o in _ir if o["inj"].get("src") != "report"], key=lambda o: -(o.get("ovr") or 0))[:15]:
-        e = ESPN_RET.get(_norm(f'{o.get("fn")} {o.get("ln")}'))
+        e = ESPN_RET.get("id:" + str(o.get("_eid"))) or ESPN_RET.get(_norm(f'{o.get("fn")} {o.get("ln")}'))
         print("  check", o.get("fn"), o.get("ln"), "->", (e["status"], e["date"], e.get("cweek"), e.get("se"), (e["com"] or "")[:160]) if e else "not on ESPN list", flush=True)
 print("players", len(out_players), "games", len(GAMES), "completed", len(completed), "lastFullWeek", last_full_week,
       "bytes", os.path.getsize(OUT))
