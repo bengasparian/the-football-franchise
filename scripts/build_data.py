@@ -672,9 +672,22 @@ try:
                    "team": tb.get("displayName")}
             m = _re.search(r"(?:until|before|by|in|for|around|return(?:ing)?(?: in| for)?)\s+Week\s+(\d{1,2})", com, _re.I)
             if m: rec["cweek"] = int(m.group(1))
-            if _re.search(r"season-ending|out for the (?:rest of the )?season|remainder of the season", com, _re.I): rec["se"] = True
+            # season-ending only when it's definite ("could miss the rest of the season" is not)
+            for sent in _re.split(r"(?<=[.!?])\s+", com):
+                if _re.search(r"season-ending|out for the (?:rest of the )?season|(?:miss|out for) the (?:rest|remainder) of the (?:\d{4} )?season", sent, _re.I) and not _re.search(r"\b(could|may|might|possibl\w*|potential\w*|chance|if|unless|fear\w*|risk)\b", sent, _re.I):
+                    rec["se"] = True
+            if rec["date"]: rec.pop("se", None)  # a return date beats a vague season-ending note
             if nm: ESPN_RET[nm] = rec
-    print("espn injuries", len(ESPN_RET), "with return dates", sum(1 for v in ESPN_RET.values() if v["date"]), flush=True)
+            # ESPN's own athlete id (nflverse rosters carry it too), the most reliable match
+            aid = str(ath.get("id") or "")
+            if not aid:
+                for lk in ath.get("links") or []:
+                    m2 = _re.search(r"/id/(\d+)", str(lk.get("href", "")))
+                    if m2: aid = m2.group(1); break
+            if aid: ESPN_RET["id:" + aid] = rec
+    print("espn injuries", len(ESPN_RET), "with return dates", sum(1 for v in ESPN_RET.values() if v["date"]), "with a Week in the note", sum(1 for v in ESPN_RET.values() if v.get("cweek")), "season-ending", sum(1 for v in ESPN_RET.values() if v.get("se")), flush=True)
+    _sample = [(k, v["status"], v["date"], (v["com"] or "")[:90]) for k, v in list(ESPN_RET.items()) if v["status"] and "reserve" in str(v["status"]).lower()][:6]
+    for x in _sample: print("  espn IR sample", x, flush=True)
 except Exception as e:
     print("espn injuries unavailable:", e, flush=True)
 
@@ -691,7 +704,16 @@ for gid_, grp in _rw.sort_values("week").groupby("gsis_id"):
         start = w_
     IR_START[gid_] = start
 
-def injury_status(gid, name, team, on_ir, default_type):
+def espn_for(r):
+    eid = getattr(r, "espn_id", None)
+    if eid is not None and not (isinstance(eid, float) and math.isnan(eid)):
+        e = ESPN_RET.get("id:" + str(int(float(eid))))
+        if e: return e
+    for nm in (f"{r.first_name} {r.last_name}", f"{r.football_name} {r.last_name}" if isinstance(getattr(r, "football_name", None), str) else None):
+        if nm and _norm(nm) in ESPN_RET: return ESPN_RET[_norm(nm)]
+    return None
+
+def injury_status(gid, name, team, on_ir, default_type, e=None):
     """Weeks still to miss from the current week, plus the week he got hurt (for the IR clock)."""
     li = LAST_INJ.get(gid)
     t = li[0] if li else default_type
@@ -702,7 +724,7 @@ def injury_status(gid, name, team, on_ir, default_type):
     hurt = max(0, min(hurt, placed))
     out = {"type": t or "Undisclosed"}
     if on_ir: out["ir"] = True; out["irw"] = placed
-    e = ESPN_RET.get(_norm(name))
+    e = e or ESPN_RET.get(_norm(name))
     if e and e.get("type") and out["type"] == "Undisclosed": out["type"] = e["type"]
     if e and e.get("se"):
         out.update({"wk": 99, "se": True}); out["src"] = "report"; return out
@@ -808,12 +830,12 @@ for p in players:
     nm_full = f"{r.first_name} {r.last_name}"
     if gid in INJ and r.gstatus != "IR":
         o["inj"] = INJ[gid]
-        e = ESPN_RET.get(_norm(nm_full))
+        e = espn_for(r)
         if e and e.get("date"):
             w = week_for_date(fix_team(r.team), e["date"])
             if w < 60: o["inj"]["wk"] = max(o["inj"]["wk"] if w > CUR_WEEK else 0, w - CUR_WEEK); o["inj"]["src"] = "report"
     if r.gstatus == "IR":
-        o["inj"] = injury_status(gid, nm_full, fix_team(r.team), True, "Undisclosed")
+        o["inj"] = injury_status(gid, nm_full, fix_team(r.team), True, "Undisclosed", espn_for(r))
     car = career(gid)
     if car:
         o["car"] = car
@@ -889,5 +911,9 @@ out = {
 os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)
 with open(OUT, "w") as f:
     json.dump(out, f, separators=(",", ":"))
+_ir = [o for o in out_players if o.get("inj", {}).get("ir")]
+print("IR players", len(_ir), "using the official report", sum(1 for o in _ir if o["inj"].get("src") == "report"), flush=True)
+_miss = [f'{o.get("fn")} {o.get("ln")}' for o in _ir if o["inj"].get("src") != "report"][:12]
+if ESPN_RET: print("  IR players without an official date (estimated):", ", ".join(_miss), flush=True)
 print("players", len(out_players), "games", len(GAMES), "completed", len(completed), "lastFullWeek", last_full_week,
       "bytes", os.path.getsize(OUT))
