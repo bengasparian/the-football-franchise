@@ -2,6 +2,7 @@
 import { G, rnd, gauss, clamp, chance, wpick, interp, pick } from './core.js';
 import { injuryTypeFor } from './injuries.js';
 import { OFF_SCHEMES, DEF_SCHEMES, teamScheme, teamFit, resolveRoles } from './schemes.js';
+import { prepFor, prepEffects } from './prep.js';
 
 const OFF_SLOTS = { QB: 1, RB: 2, WR: 4, TE: 2, OT: 2, OG: 2, C: 1, FB: 1 };
 const DEF_SLOTS = { EDGE: 3, DT: 3, LB: 3, CB: 4, S: 2 };
@@ -141,6 +142,9 @@ function rateUnit(u) {
   const sub = rushers(u, true), sE = [], sD = [];
   sub.forEach((p, i) => (i < 2 ? sE : sD).push(p));
   u.r.rushSub = Math.max(u.r.rush, a(sE, 'prs') * 0.62 + a(sD, 'prs') * 0.32 + a(u.LB.slice(0, 1), 'prs') * 0.06);
+  // this week's prep (see prep.js): the focused unit plays a little sharper
+  const P = u.prep;
+  if (P) { u.r.pbk += P.pass * 1.2; u.r.rbk += P.run * 1.5; u.r.rush += P.rush * 1.5; u.r.rushSub += P.rush * 1.5; u.r.cover += P.cover * 1.5; u.r.runD += P.rund * 1.5; }
 }
 
 // passing-down rush unit: the pass-rush specialist replaces the weakest of the four starting rushers
@@ -163,7 +167,13 @@ export function simGame(game, opts = {}) {
   const rules = Lg.rules;
   const H = buildUnit(game.h, opts), A = buildUnit(game.a, opts);
   const playoff = !!opts.playoff;
-  const box = { pl: {}, tm: [mkTeamBox(game.h), mkTeamBox(game.a)], scoring: [], plays: [], inj: [] };
+  // weekly prep (regular season and playoffs)
+  const prs = game.type === 'PRE' ? [null, null] : [prepFor(game.h, game.a), prepFor(game.a, game.h)];
+  [H, A].forEach((u, i) => {
+    u.prep = prepEffects(prs[i]);
+    if (u.prep) { rateUnit(u); u.ocB += u.prep.film * 0.22; u.dcB += u.prep.film * 0.22; }
+  });
+  const box = { pl: {}, tm: [mkTeamBox(game.h), mkTeamBox(game.a)], scoring: [], plays: [], inj: [], prep: prs.map((x) => (x ? { focus: x.focus, int: x.int, grade: x.grade } : null)) };
   const U = [H, A];
   for (const u of U) for (const p of u.all) inc(box, p, 'gp', 1);
   const S = { q: 1, clock: 900, score: [0, 0], off: 0, yl: 25, down: 1, dist: 10, to: [3, 3], ot: false, otPoss: [0, 0], otFirst: null, over: false, plays: 0, half2Kick: null };
@@ -172,7 +182,7 @@ export function simGame(game, opts = {}) {
   const upset = sl.upsetFactor ?? 1;
   // game-day form: each team has a small random form swing (any-given-Sunday)
   const sf = (tid) => (G.L.teams[tid]?.sf || 0);
-  const form = [gauss(0, 2.4 * upset) + homeAdv / 2 + sf(game.h), gauss(0, 2.4 * upset) - homeAdv / 2 + sf(game.a)];
+  const form = [gauss(0, 2.0 * upset) + homeAdv / 2 + sf(game.h), gauss(0, 2.0 * upset) - homeAdv / 2 + sf(game.a)];
   const scoringAdj = (sl.scoring ?? 1);
 
   const coin = chance(0.5) ? 0 : 1; // team that receives first
@@ -581,7 +591,8 @@ export function simGame(game, opts = {}) {
       - (d.r.cover - 74) / 10 * 0.012 + (scoringAdj - 1) * 0.15
       + (depth === 'dp' ? (d.sd.deep - 1) * 0.12 : depth === 'md' ? (d.sd.deep - 1) * 0.05 : (d.sd.shortC - 1) * 0.5)
       + (S.down <= 2 && o.so.pa && (depth === 'md' || depth === 'dp') ? o.so.pa * (o.r.rbk > d.r.runD ? 1 : 0.5) : 0)
-      + (S.down === 3 ? (o.so.third || 0) : 0);
+      + (S.down === 3 ? (o.so.third || 0) : 0)
+      + 0.005 * ((o.prep?.pass || 0) - (d.prep?.cover || 0));
     cp = clamp(cp, 0.12, 0.93);
     inc(box, qb, 'att'); tb(S.off).att++;
     inc(box, tg, 'tgt'); inc(box, cov, 'tgtA');
@@ -753,7 +764,7 @@ export function simGame(game, opts = {}) {
         inc(box, p, ui === S.off ? 'offSn' : 'defSn');
         const pm = { RB: 1.35, WR: 1.0, TE: 1.1, QB: 0.75, OT: 0.9, OG: 0.9, C: 0.85, EDGE: 1.05, DT: 0.95, LB: 1.1, CB: 1.05, S: 1.0 }[p.pos] || 1;
         const dur = (110 - (p.r.a.inj ?? 80)) / 30;
-        if (rnd() < rate * pm * dur) {
+        if (rnd() < rate * pm * dur * (u.prep?.inj ?? 1)) {
           const it = injuryTypeFor(p.pos, sl.injurySeverity ?? 1);
           box.inj.push({ pid: p.pid, tid: u.tid, ...it });
           // replace on the field for the rest of the game

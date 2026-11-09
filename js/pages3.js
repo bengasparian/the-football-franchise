@@ -77,6 +77,7 @@ PAGES3.home = async () => {
       <div class="tiles">
         ${T('#/roster', '🏈', 'Roster', `${d.counts.ACT || 0}/53 active · ${d.counts.PS || 0} PS`, 'Your players, contracts and roster moves')}
         ${T('#/lineup', '📋', 'Adjust Lineup', 'Set your starters on the field', 'Pick who lines up at every spot: LT, slot, nickel and more')}
+        ${['REGULAR_SEASON', 'PLAYOFFS'].includes(ph) ? T('#/prep', '🏋️', 'Week Prep', d.prep ? `${esc(d.prep.label)} · ${d.prep.grade}${d.prep.auto ? ' (staff)' : ''}` : 'Plan this week', 'Choose a training focus and intensity for your next game') : ''}
         ${T('#/trade', '🔁', 'Trade Center', 'Build a deal', 'Trade players and picks with any team')}
         ${T('#/fa', '✍️', 'Free Agency', ph === 'FREE_AGENCY' ? 'LIVE now' : 'Available players', 'Sign free agents')}
         ${T('#/draft', '🎯', 'Draft & Scouting', ph === 'DRAFT' ? 'LIVE now' : 'Scout prospects', 'Scout the next draft class')}
@@ -409,3 +410,31 @@ export async function liveTick() {
   tickBusy = false;
 }
 void closeModal; void modal; void delta; void gameCard; void injBadge;
+
+// ===================================================================== WEEK PREP (weekly training)
+PAGES3.prep = async () => {
+  const d = await call('prepInfo', { tid: session.tid });
+  const head = `<div class="page-h"><h1>Week Prep</h1><span class="sub">${d.game === null ? '' : `${esc(d.week)} · ${d.home ? 'vs' : '@'} ${esc(d.opp.region)} ${esc(d.opp.name)}`}</span></div>`;
+  const hist = d.hist?.length ? `<div class="card"><h2>Recent weeks</h2>${d.hist.map((h) => `<div class="mini-row"><span class="tiny dim" style="width:60px">${esc(h.k.split(':')[1] && isNaN(+h.k.split(':')[1]) ? h.k.split(':')[1] : `Wk ${h.k.split(':')[1]}`)}</span><span style="flex:1">${esc(h.label || '')} · ${esc(h.int)}</span><span class="badge">${esc(h.grade || '')}</span><span class="small ${h.res > 0 ? 'good' : h.res < 0 ? 'bad' : ''}" style="width:90px;text-align:right">${h.res > 0 ? 'W' : h.res < 0 ? 'L' : 'T'} ${h.res > 0 ? '+' : ''}${h.res} vs ${esc(h.oppAbbr || '')}</span></div>`).join('')}</div>` : '';
+  if (!d.game && !d.opp) return `${head}<div class="card muted">${esc(d.reason)}</div>${hist}`;
+  const c = d.choice;
+  const unitRow = (u) => { const theyStrong = u.themRank <= 8, weStrong = u.meRank <= 8; return `<tr><td>${esc(u.label)}</td><td class="num ${weStrong ? 'good' : u.meRank >= 25 ? 'bad' : ''}">${u.me} <span class="tiny dim">#${u.meRank}</span></td><td class="num ${theyStrong ? 'bad' : u.themRank >= 25 ? 'good' : ''}">${u.them} <span class="tiny dim">#${u.themRank}</span></td></tr>`; };
+  const opt = (o) => `<button class="prep-opt ${c.focus === o.k ? 'on' : ''}" ${d.mine ? `data-act="prepSet" data-f="${o.k}"` : 'disabled'} title="${esc(o.desc)}"><div class="row" style="justify-content:space-between"><b>${esc(o.label)}</b><span class="grade g-${o.grade[0]}">${o.grade}</span></div><div class="tiny muted">${esc(o.desc)}</div>${o.best ? '<div class="tiny"><span class="badge grn">Staff recommends</span></div>' : ''}</button>`;
+  const ints = d.ints.map((i) => `<button class="btn ${c.int === i.k ? 'pri' : ''}" ${d.mine ? `data-act="prepInt" data-i="${i.k}"` : 'disabled'} title="${esc(i.desc)}">${esc(i.label)}<span class="tiny dim" style="margin-left:6px">${i.mult === 1 ? 'normal boost' : `${Math.round(i.mult * 100)}% boost`} · ${i.inj === 1 ? 'normal injuries' : `${i.inj > 1 ? '+' : ''}${Math.round((i.inj - 1) * 100)}% injuries`}</span></button>`).join('');
+  const cur = d.opts.find((o) => o.k === c.focus);
+  return `${head}
+    <div class="card prep-plan"><div class="row" style="gap:14px;flex-wrap:wrap"><div><div class="tiny muted">THIS WEEK'S PLAN</div><div class="cond" style="font-size:24px;font-weight:800">${esc(cur?.label || c.focus)} · ${esc(d.ints.find((i) => i.k === c.int)?.label || c.int)}</div></div><span class="grade big g-${c.grade[0]}" title="How much this plan should help against this opponent">${c.grade}</span>${c.auto ? '<span class="badge" title="You have not picked: your staff chose this">STAFF\'S PICK</span>' : '<span class="badge yel">YOUR CALL</span>'}${!c.auto && d.mine ? '<button class="btn sm" data-act="prepSet" data-f="auto" title="Let your coaches pick every week">Let my staff decide</button>' : ''}</div>
+      <div class="small muted" style="margin-top:6px">Your plan is locked in when the game is played. If you don't choose, your staff picks the best plan for the matchup (and simming several weeks always uses your staff's picks). Young players in the focused group also bank a little extra development for the offseason.</div></div>
+    <div class="grid g21"><div><div class="card"><h2>Training focus</h2><div class="prep-grid">${d.opts.map(opt).join('')}</div>
+      <h3 style="margin-top:14px">Intensity</h3><div class="btn-group">${ints}</div></div></div>
+      <div><div class="card"><h2>Scouting report</h2><table class="tbl"><thead><tr><th>Unit</th><th class="num">${esc(d.team.abbr)}</th><th class="num">${esc(d.opp.abbr)}</th></tr></thead><tbody>${d.units.map(unitRow).join('')}</tbody></table>
+        <div class="tiny muted" style="margin-top:6px">League rank in parentheses. Prep is worth the most against what they do best (protect against a top pass rush, cover a top passing game), or where your own unit needs help.</div></div>${hist}</div></div>`;
+};
+ACTIONS.prepSet = async (el) => {
+  const d = await call('prepInfo', { tid: session.tid });
+  await act('setPrep', { tid: session.tid, focus: el.dataset.f, int: d.choice.int }, { msg: el.dataset.f === 'auto' ? 'Your staff will plan each week.' : null });
+};
+ACTIONS.prepInt = async (el) => {
+  const d = await call('prepInfo', { tid: session.tid });
+  await act('setPrep', { tid: session.tid, focus: d.choice.focus, int: el.dataset.i });
+};

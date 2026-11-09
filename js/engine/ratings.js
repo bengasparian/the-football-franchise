@@ -358,6 +358,8 @@ export function offseasonProgression() {
       d = d * 0.85 * sl.progression * (0.7 + work * 0.6) + (a < 27 ? DEV_GROWTH[dev] * sl.progression : 0);
       // room to grow: the further below his ceiling, the faster a young player climbs
       if (a < 27 && p.r.pot > p.r.ovr) d += (p.r.pot - p.r.ovr) * 0.05;
+      // weekly training reps banked during the season
+      if (a < 27) d += Math.min(1.5, (p.txp || 0) / 12);
     } else {
       const lonF = 1.3 - (p.lon ?? 60) / 100 * 0.6;
       d = d * sl.regression * DEV_AGING[dev] * (1.15 - work * 0.3) * lonF;
@@ -385,6 +387,7 @@ export function offseasonProgression() {
   }
   // keep the league's rating distribution steady (no creeping inflation or deflation), position by position
   normalizeOvrs(entries);
+  for (const p of Object.values(Lg.players)) delete p.txp; // the weekly-training bank resets every offseason
   for (const e of entries) {
     const p = e.p;
     const hidden = (p.r.tal ?? p.r.ovr) - p.r.ovr;

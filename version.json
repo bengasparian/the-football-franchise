@@ -1,5 +1,5 @@
 {
-"v": "1b84713dce6c",
+"v": "761fa8070378",
 "files": [
 "css/style.css",
 "data/league.json",
@@ -23,6 +23,7 @@
 "js/engine/league.js",
 "js/engine/names.js",
 "js/engine/personality.js",
+"js/engine/prep.js",
 "js/engine/ratings.js",
 "js/engine/relocation.js",
 "js/engine/roster.js",

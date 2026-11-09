@@ -5,6 +5,7 @@ import { awardScores } from './awards.js';
 import { CITIES, BRANDS, crest, relocateTeam, rebrandTeam } from './relocation.js';
 import { faTick, faStatus } from './fa.js';
 import { DEV, DEV_INFO, longevityLabel } from './dev.js';
+import { PREP_FOCUS, PREP_INT, prepActive, prepFor, prepOptions, setUserPrep, unitProfile, gradeFor } from './prep.js';
 import { G, age, capFor, clamp, setRngState, rngState, fmtMoney, isUser, news, transaction } from './core.js';
 import { POSITIONS, POS_NAMES, PHASE_LABEL, ROUND_LABEL, DEFAULT_SLIDERS, SLIDER_INFO, DEPTH_SLOTS } from './const.js';
 import { createLeague } from './league.js';
@@ -151,6 +152,7 @@ export function dashboard({ tid }, ctx) {
     bye: m.phase === 'REGULAR_SEASON' && !Lg.games.some((g) => g.s === m.season && g.type === 'REG' && g.w === m.week && (g.h === tid || g.a === tid)) ? m.week : null,
     byeWeek: byeWeek(tid, m.season),
     todo: todoList(tid, ctx),
+    prep: (() => { if (!prepActive()) return null; const g = nextPrepGame(tid); if (!g) return null; const pr = prepFor(tid, g.h === tid ? g.a : g.h); return { label: PREP_FOCUS[pr.focus].label, grade: pr.grade, auto: !!pr.auto }; })(),
     recapWeek: lastPlayedWeek(),
   };
 }
@@ -167,6 +169,7 @@ function todoList(tid, ctx) {
   const offers = Lg.offers.filter((o) => o.toTid === tid && o.status === 'open').length;
   const evs = Lg.events.filter((e) => e.tid === tid && e.open).length;
   if (evs) add(`Respond to ${evs} front-office decision${evs > 1 ? 's' : ''}`, '#/home', true);
+  if (prepActive() && nextPrepGame(tid)) { const g = nextPrepGame(tid); const pr = prepFor(tid, g.h === tid ? g.a : g.h); add(pr.auto ? `Plan this week's prep (your staff picked ${PREP_FOCUS[pr.focus].label}, ${pr.grade})` : `Week prep set: ${PREP_FOCUS[pr.focus].label} · ${pr.grade}`, '#/prep', false, !pr.auto); }
   if (offers) add(`Review ${offers} trade offer${offers > 1 ? 's' : ''}`, '#/offers');
   if (cap.space < 0) add(`Get under the salary cap (${Math.round(cap.space / 1e5) / 10}M)`, '#/cap', true);
   const injStarters = ps.filter((p) => p.inj && p.inj.wk > 0 && Object.values(t.depth).some((d) => d.slice(0, 2).includes(p.pid)));
@@ -955,3 +958,41 @@ export function editPlayer({ pid, ch = {} }, ctx) {
 
 // one-time fixes for saves made with older versions (returns true if anything changed)
 export function upgradeSave() { return upgradeCombines(); }
+
+// ------------------------------------------------------------------ weekly prep (like Madden weekly training)
+function nextPrepGame(tid) {
+  const Lg = L();
+  const m = Lg.meta;
+  const types = m.phase === 'PLAYOFFS' ? [Lg.playoffs?.round] : ['REG'];
+  return Lg.games.filter((g) => g.s === m.season && !g.played && types.includes(g.type) && (g.h === tid || g.a === tid) && (m.phase === 'PLAYOFFS' || g.w === m.week))[0] || null;
+}
+export function prepInfo({ tid } = {}, ctx = {}) {
+  const Lg = L();
+  tid = tid ?? ctx.tid;
+  const t = T(tid);
+  const g = prepActive() ? nextPrepGame(tid) : null;
+  const hist = (t.prepHist || []).slice(0, 6).map((h) => ({ ...h, label: PREP_FOCUS[h.focus]?.label, oppAbbr: T(h.opp)?.abbr }));
+  if (!g) return { active: prepActive(), game: null, team: teamLite(t), hist, mine: own(ctx, tid), reason: prepActive() ? (Lg.meta.phase === 'PLAYOFFS' ? 'Your season is over.' : 'No game this week (bye).') : 'Weekly prep starts in the regular season.' };
+  const opp = g.h === tid ? g.a : g.h;
+  const pr = prepFor(tid, opp);
+  const o = prepOptions(tid, opp);
+  const me = unitProfile(tid), them = unitProfile(opp);
+  const all = Lg.teams.map((x) => unitProfile(x.tid));
+  const rank = (f, v) => 1 + all.filter((x) => x[f] > v + 1e-9).length;
+  const units = ['pass', 'run', 'rush', 'cover', 'rund'].map((f) => ({ f, label: PREP_FOCUS[f].label, me: Math.round(me[f]), meRank: rank(f, me[f]), them: Math.round(them[f]), themRank: rank(f, them[f]) }));
+  const bestF = Object.entries(o).sort((a, b) => b[1].b - a[1].b)[0][0];
+  const opts = Object.entries(PREP_FOCUS).filter(([k]) => k !== 'zero').map(([k, F]) => ({ k, label: F.label, desc: F.desc, side: F.side, b: Math.round(o[k].b * 100) / 100, grade: gradeFor(o[k].b), fit: o[k].fit, best: k === bestF }));
+  return {
+    active: true, mine: own(ctx, tid), team: teamLite(t), opp: teamLite(T(opp)), home: g.h === tid, week: Lg.meta.phase === 'PLAYOFFS' ? ROUND_LABEL[g.type] : `Week ${g.w}`,
+    choice: { focus: pr.focus, int: pr.int, auto: !!pr.auto, grade: pr.grade, b: pr.b }, opts, ints: Object.entries(PREP_INT).map(([k, I]) => ({ k, label: I.label, desc: I.desc, mult: I.mult, inj: I.inj })),
+    units, hist,
+  };
+}
+export function setPrep({ tid, focus, int }, ctx) {
+  requireOwn(ctx, tid);
+  const g = nextPrepGame(tid);
+  if (!g) throw new Error('No game to prepare for right now.');
+  const opp = g.h === tid ? g.a : g.h;
+  const pr = setUserPrep(tid, opp, focus, int);
+  return { ok: true, grade: pr.grade, focus: pr.focus, int: pr.int };
+}

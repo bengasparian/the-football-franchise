@@ -21,6 +21,7 @@ import { cpuRelocationCheck } from './relocation.js';
 import { addSeasonPicks, setExpectations } from './league.js';
 import { autoDepth, rosterCounts } from './roster.js';
 import { weeklyEvents } from './events.js';
+import { afterPrep } from './prep.js';
 
 export { generateSchedule };
 
@@ -33,7 +34,8 @@ export function playGame(g) {
   const playoff = !['REG', 'PRE'].includes(g.type);
   const box = simGame(g, { playoff });
   g.hs = box.final[0]; g.as = box.final[1]; g.ot = box.ot; g.played = true;
-  g.box = { tm: box.tm, pl: {}, scoring: box.scoring, plays: box.plays, inj: box.inj.map((x) => ({ pid: x.pid, type: x.type, wk: x.wk })) };
+  g.box = { tm: box.tm, pl: {}, scoring: box.scoring, plays: box.plays, inj: box.inj.map((x) => ({ pid: x.pid, type: x.type, wk: x.wk })), prep: box.prep };
+  if (g.type !== 'PRE' && Lg.prep) { afterPrep(g.h, Lg.prep[g.h], g.hs - g.as); afterPrep(g.a, Lg.prep[g.a], g.as - g.hs); }
   const s = g.s;
   const bucket = g.type === 'REG' ? 'REG' : g.type === 'PRE' ? 'PRE' : 'POST';
   const plays = [box.tm[0].plays, box.tm[1].plays];
