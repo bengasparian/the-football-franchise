@@ -915,5 +915,9 @@ _ir = [o for o in out_players if o.get("inj", {}).get("ir")]
 print("IR players", len(_ir), "using the official report", sum(1 for o in _ir if o["inj"].get("src") == "report"), flush=True)
 _miss = [f'{o.get("fn")} {o.get("ln")}' for o in _ir if o["inj"].get("src") != "report"][:12]
 if ESPN_RET: print("  IR players without an official date (estimated):", ", ".join(_miss), flush=True)
+if ESPN_RET:
+    for o in sorted([o for o in _ir if o["inj"].get("src") != "report"], key=lambda o: -(o.get("ovr") or 0))[:15]:
+        e = ESPN_RET.get(_norm(f'{o.get("fn")} {o.get("ln")}'))
+        print("  check", o.get("fn"), o.get("ln"), "->", (e["status"], e["date"], e.get("cweek"), e.get("se"), (e["com"] or "")[:160]) if e else "not on ESPN list", flush=True)
 print("players", len(out_players), "games", len(GAMES), "completed", len(completed), "lastFullWeek", last_full_week,
       "bytes", os.path.getsize(OUT))
