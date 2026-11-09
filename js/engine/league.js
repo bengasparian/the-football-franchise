@@ -3,6 +3,7 @@ import { TRADED_PICKS } from './const.js';
 import { G, seedRng, rnd, gauss, clamp, age, nextId, rngState, news, capFor } from './core.js';
 import { CAP_2026, RULES_DEFAULT, DEFAULT_SLIDERS, TEAM_INFO, OWNERS, NO_TAX } from './const.js';
 import { generateStories } from './storylines.js';
+import { REAL_HISTORY } from './history.js';
 import { genAttrs, initTalent, computeOvr, projectPeak, captureRefDist, setOvr, refreshTeamRef } from './ratings.js';
 import { initDevTraits, initLongevity, applyKnownPersonality } from './dev.js';
 import { genPersonality } from './personality.js';
@@ -142,6 +143,7 @@ export function createLeague(data, opts) {
   captureRefDist();
   refreshTeamRef(1); // fixes the league reference that team overalls are spread around
   L.meta.combineV = 2;
+  L.realLastSB = REAL_HISTORY.sb.find((x) => x.s === L.meta.season - 1) || null; // last real Super Bowl, for storylines
   if (!L.fantasy) for (const ut of L.meta.userTids) generateStories(ut); // each new league starts with its own storylines
   for (const ut of L.meta.userTids) { setOwnerGoals(L.teams[ut]); if (L.teams[ut].scoutPts == null) L.teams[ut].scoutPts = 60; }
   // draft class for next April, scouting during the season

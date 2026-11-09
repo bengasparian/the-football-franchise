@@ -91,30 +91,104 @@ const TYPES = {
     lose: (p) => `No playoffs this year. ${NAME(p)} says he isn't ready to call it a career yet.`,
   },
 };
+// joined the team since last season (trade, free agency, or a new deal elsewhere)
+const newHere = (p) => (p.yrsWithTeam ?? 1) === 0 || (p.stats?.[season() - 1]?.tm != null && p.stats[season() - 1].tm !== p.tid);
+TYPES.fresh = {
+  icon: '✈️', title: (p) => `Fresh Start: ${NAME(p)}`,
+  find: (tid, used) => Object.values(G.L.players).filter((p) => p.tid === tid && p.status === 'ACT' && !used.has(p.pid) && STAT[p.pos] && p.pos !== 'QB' && p.r.ovr >= 78 && starter(p) && newHere(p) && p.draft?.y !== season()).sort((a, b) => b.r.ovr - a.r.ovr)[0],
+  make: (p) => { const g = goalFor(p, 'big'); return { goal: { ...g, by: 'season' }, intro: pick([`${NAME(p)} is the big new arrival. The fans want to see what all the fuss is about.`, `New team, new city. ${NAME(p)} says he has a lot to prove to his new teammates.`]) }; },
+  beats: [[0.5, (p) => `${NAME(p)} is fitting right in. The front office looks smart for bringing him in.`], [0.85, (p) => `${NAME(p)} has become a fan favorite in his first year here.`]],
+  win: (p, g) => `${NAME(p)} hits ${fmt(g.k, g.target)} ${g.l} in his first season here. Money well spent.`,
+  lose: (p, g, v) => `${NAME(p)} finishes his first year here with ${fmt(g.k, v)} ${g.l}. Not quite the splash everyone hoped for.`,
+};
+TYPES.newqb = {
+  icon: '🎯', title: (p) => `New QB1: ${NAME(p)}`,
+  find: (tid, used) => { const t = G.L.teams[tid]; const p = G.L.players[(t.depth.QB || [])[0]]; return p && p.tid === tid && !used.has(p.pid) && p.status === 'ACT' && p.r.ovr >= 68 && (newHere(p) || (p.draft?.y === season())) ? p : null; },
+  make: (p) => ({ goal: { k: 'pyd', l: 'passing yards', target: goalFor(p, p.r.ovr >= 80 ? 'big' : 'rookie').target, by: 'season' }, intro: `It's ${NAME(p)}'s team now. A new starting quarterback changes everything in a building, and all eyes are on him.` }),
+  beats: [[0.4, (p) => `${NAME(p)} is getting comfortable running the offense.`], [0.8, (p) => `The quarterback question looks answered: ${NAME(p)} is the guy.`]],
+  win: (p, g) => `${NAME(p)} passes for ${fmt(g.k, g.target)} yards in his first year as the starter. The franchise has its quarterback.`,
+  lose: (p, g, v) => `${NAME(p)} throws for ${fmt(g.k, v)} yards in his first year as the starter. The jury is still out.`,
+};
+// the team's own context: last season, this season's projection, the coach, the schedule
+function lastSeason(tid) {
+  const Lg = G.L;
+  const s = season() - 1;
+  const h = (Lg.teams[tid].hist || []).find((x) => x.s === s);
+  const elim = Lg.history?.seasons?.[s]?.playoffs || [];
+  const lostIn = elim.find((r) => r.l === tid)?.round || null;
+  const champ = Lg.champions.find((c) => c.s === s)?.tid ?? null;
+  return { w: h?.w ?? null, l: h?.l ?? null, seed: h?.seed ?? null, lostIn, champ };
+}
+function lastChamp() {
+  const Lg = G.L;
+  const c = Lg.champions.find((x) => x.s === season() - 1);
+  if (c && c.tid != null) return { tid: c.tid, ru: c.ru ?? null };
+  const real = G.L.realLastSB; // set at league creation from real history (the most recent real Super Bowl)
+  if (!real) return null;
+  const w = Lg.teams.find((t) => t.abbr === real.wa), l = Lg.teams.find((t) => t.abbr === real.la);
+  return w ? { tid: w.tid, ru: l?.tid ?? null } : null;
+}
 const TEAM_TYPES = {
-  rivalry: {
-    icon: '⚔️',
-    make: (tid) => {
-      const Lg = G.L;
-      const t = Lg.teams[tid];
-      const s = season();
-      const rivals = Lg.teams.filter((x) => x.tid !== tid && x.conf === t.conf && x.div === t.div);
-      const games = (r) => Lg.games.filter((g) => g.s === s && g.type === 'REG' && !g.played && ((g.h === tid && g.a === r.tid) || (g.a === tid && g.h === r.tid)));
-      const r = rivals.filter((x) => games(x).length >= 1).sort((a, b) => (b.expectWins ?? 8) - (a.expectWins ?? 8))[0];
-      if (!r) return null;
-      const n = games(r).length;
-      return { opp: r.tid, title: `Rivalry: ${t.name} vs ${r.name}`, goal: { k: 'rival', l: `wins over the ${r.name}`, target: n, by: 'season' }, intro: `The ${r.region} ${r.name} are the team everyone in the building wants to beat. ${n === 2 ? 'Sweep them' : 'Beat them'} this season.` };
-    },
+  // a rival only when there's real history: two contenders, a close division race, or they've had our number
+  rivalry: (tid) => {
+    const Lg = G.L;
+    const t = Lg.teams[tid];
+    const s = season();
+    const left = (r) => Lg.games.filter((g) => g.s === s && g.type === 'REG' && !g.played && ((g.h === tid && g.a === r.tid) || (g.a === tid && g.h === r.tid))).length;
+    const prevGames = (r) => Lg.games.filter((g) => g.s === s - 1 && g.type === 'REG' && g.played && ((g.h === tid && g.a === r.tid) || (g.a === tid && g.h === r.tid)));
+    const lostBoth = (r) => { const gs = prevGames(r); return gs.length === 2 && gs.every((g) => (g.h === tid) !== (g.hs > g.as)); };
+    const ls = lastSeason(tid);
+    const cands = Lg.teams.filter((r) => r.tid !== tid && r.conf === t.conf && r.div === t.div && left(r) >= 1).map((r) => {
+      const lr = (r.hist || []).find((x) => x.s === s - 1);
+      const why = lostBoth(r) ? `swept us last season` : lr && ls.w != null && lr.w > ls.w && lr.w - ls.w <= 2 ? `edged us for the division last year` : (r.expectWins ?? 8) >= 9.5 && (t.expectWins ?? 8) >= 9.5 ? `stand between us and the division` : null;
+      return why ? { r, why } : null;
+    }).filter(Boolean);
+    if (!cands.length || rnd() < 0.25) return null;
+    const { r, why } = pick(cands);
+    const n = left(r);
+    return { opp: r.tid, title: `Rivalry: ${t.name} vs ${r.name}`, goal: { k: 'rival', l: `wins over the ${r.name}`, target: n, by: 'season' }, intro: `The ${r.region} ${r.name} ${why}. ${n === 2 ? 'This year: sweep them.' : 'This year: beat them.'}` };
   },
-  doubters: {
-    icon: '📣',
-    make: (tid) => {
-      const t = G.L.teams[tid];
-      const ew = t.expectWins ?? 8.5;
-      if (ew <= 7.5) return { title: `Prove the Doubters Wrong`, goal: { k: 'wins', l: 'wins', target: 9, by: 'season' }, intro: `The experts picked the ${t.name} to win about ${Math.round(ew)} games. The locker room has that number taped up. Get to 9 wins.` };
-      if (ew >= 11) return { title: `Super Bowl or Bust`, goal: { k: 'divwin', l: 'win the division', target: 1, by: 'playoffs' }, intro: `Expectations are sky-high for the ${t.name}. Anything less than a division title will feel like a failure.` };
-      return { title: `Back to the Playoffs`, goal: { k: 'playoffs', l: 'make the playoffs', target: 1, by: 'playoffs' }, intro: `The ${t.name} are in the mix. The message all offseason: get back to January football.` };
-    },
+  doubters: (tid) => {
+    const t = G.L.teams[tid];
+    const ew = t.expectWins ?? 8.5;
+    if (ew > 6.5) return null;
+    return { title: `Prove the Doubters Wrong`, goal: { k: 'wins', l: 'wins', target: Math.max(7, Math.round(ew) + 3), by: 'season' }, intro: `The experts picked the ${t.name} to win about ${Math.round(ew)} games. The locker room has that number taped up. Get to ${Math.max(7, Math.round(ew) + 3)} wins.` };
+  },
+  bounce: (tid) => {
+    const t = G.L.teams[tid], ls = lastSeason(tid);
+    if (ls.w == null || ls.w > 6 || (t.expectWins ?? 8) < 7.5) return null;
+    return { title: `Bounce-Back Season`, goal: { k: 'playoffs', l: 'make the playoffs', target: 1, by: 'playoffs' }, intro: `Last year's ${ls.w}-${ls.l} finish is still stinging. The roster is better now, and the goal is simple: get back to the playoffs.` };
+  },
+  unfinished: (tid) => {
+    const t = G.L.teams[tid], ls = lastSeason(tid), lc = lastChamp();
+    const lostBig = ls.lostIn && ['DIV', 'CONF', 'SB'].includes(ls.lostIn);
+    const ru = lc && lc.ru === tid;
+    if (!lostBig && !ru) return null;
+    return { title: `Unfinished Business`, goal: { k: 'pwin', l: 'win a playoff game', target: 1, by: 'final' }, intro: ru ? `The ${t.name} were one game away last year and lost the Super Bowl. Nobody in the building has forgotten.` : `The ${t.name} came up short in the playoffs last year. This season is about finishing the job.` };
+  },
+  defend: (tid) => {
+    const t = G.L.teams[tid], lc = lastChamp();
+    if (!lc || lc.tid !== tid) return null;
+    return { title: `Defend the Crown`, goal: { k: 'playoffs', l: 'make the playoffs', target: 1, by: 'playoffs' }, intro: `The ${t.name} are the defending champions, and every team circles them on the schedule. Repeat runs start with getting back in.` };
+  },
+  bust: (tid) => {
+    const t = G.L.teams[tid];
+    if ((t.expectWins ?? 8) < 11.5) return null;
+    return { title: `Super Bowl or Bust`, goal: { k: 'divwin', l: 'win the division', target: 1, by: 'playoffs' }, intro: `Expectations are sky-high for the ${t.name}. Anything less than a division title will feel like a failure.` };
+  },
+  measuring: (tid) => {
+    const Lg = G.L, lc = lastChamp();
+    if (!lc || lc.tid === tid) return null;
+    const g = Lg.games.find((x) => x.s === season() && x.type === 'REG' && !x.played && ((x.h === tid && x.a === lc.tid) || (x.a === tid && x.h === lc.tid)));
+    if (!g || rnd() < 0.3) return null;
+    const c = Lg.teams[lc.tid];
+    return { opp: lc.tid, title: `Measuring Stick: vs the ${c.name}`, goal: { k: 'rival', l: `win over the champion ${c.name}`, target: 1, by: 'season' }, intro: `The defending champion ${c.region} ${c.name} are on the schedule in Week ${g.w}. Want to know where you stand? Beat the champs.` };
+  },
+  newera: (tid) => {
+    const Lg = G.L, t = Lg.teams[tid];
+    const hc = Lg.coaches?.[t.staff?.hc];
+    if (!hc || (hc.rec?.yrs ?? 1) > 0) return null;
+    return { title: `A New Era`, goal: { k: 'wins', l: 'wins', target: Math.max(8, Math.min(10, Math.round((t.expectWins ?? 8) + 1))), by: 'season' }, intro: `${hc.name} takes over as head coach. New staff, new schemes, new energy. A winning first season would set the tone.` };
   },
 };
 
@@ -130,19 +204,42 @@ export function generateStories(tid) {
   if (!['PRESEASON', 'REGULAR_SEASON'].includes(Lg.meta.phase)) return; // stories are written for a season about to be played
   const s = season();
   if (Lg.stories.some((x) => x.tid === tid && x.s === s && x.type !== 'revenge')) return;
+  // last season's stories: the same player rarely gets the same kind of story twice in a row
+  const prev = new Set(Lg.stories.filter((x) => x.tid === tid && x.s === s - 1).map((x) => `${x.type}:${x.pid ?? ''}`));
   const used = new Set();
   const made = [];
-  for (const type of shuffle(['record', 'rookie', 'contract', 'comeback', 'lastdance'])) {
-    if (made.length >= 3) break;
-    const T = TYPES[type];
-    const p = T.find(tid, used);
+  // player stories: every type that genuinely fits someone on this roster, then a few of them at random
+  const pc = [];
+  for (const type of Object.keys(TYPES)) {
+    const p = TYPES[type].find(tid, used);
     if (!p) continue;
-    const m = T.make(p);
+    if (prev.has(`${type}:${p.pid}`) && rnd() < 0.8) continue;
+    pc.push({ type, p });
+  }
+  const nP = Math.min(pc.length, pc.length >= 4 ? 3 : pc.length >= 2 ? 2 : pc.length);
+  for (const { type, p } of shuffle(pc)) {
+    if (made.length >= nP) break;
+    if (used.has(p.pid)) continue;
+    const m = TYPES[type].make(p);
     if (!m.goal) continue;
     used.add(p.pid);
-    made.push({ type, pid: p.pid, title: T.title(p), icon: T.icon, ...m });
+    made.push({ type, pid: p.pid, title: TYPES[type].title(p), icon: TYPES[type].icon, ...m });
   }
-  for (const type of ['doubters', 'rivalry']) { const m = TEAM_TYPES[type].make(tid); if (m) made.push({ type, icon: TEAM_TYPES[type].icon, ...m }); }
+  // team stories: only the ones this team's situation calls for (at most two, at most one about expectations)
+  const ICON = { rivalry: '⚔️', doubters: '📣', bounce: '🔄', unfinished: '🏁', defend: '👑', bust: '💍', measuring: '📏', newera: '🌅' };
+  const tc = [];
+  for (const type of shuffle(Object.keys(TEAM_TYPES))) {
+    if (prev.has(`${type}:`) && type !== 'rivalry' && rnd() < 0.5) continue;
+    const m = TEAM_TYPES[type](tid);
+    if (m) tc.push({ type, icon: ICON[type], ...m });
+  }
+  const EXPECT = new Set(['doubters', 'bounce', 'unfinished', 'defend', 'bust', 'newera']);
+  let exp = 0;
+  for (const m of tc) {
+    if (made.length >= nP + 2) break;
+    if (EXPECT.has(m.type)) { if (exp) continue; exp++; }
+    made.push(m);
+  }
   for (const m of made) {
     const st = { id: `st${s}-${tid}-${m.type}-${Math.floor(rnd() * 1e6)}`, tid, s, type: m.type, pid: m.pid || null, opp: m.opp ?? null, title: m.title, icon: m.icon, goal: m.goal, status: 'active', beat: 0, chapters: [] };
     Lg.stories.push(st);
@@ -183,6 +280,7 @@ function progress(st) {
   if (g.k === 'g') return p ? gp(p) - (g.base || 0) : 0;
   if (g.k === 'wins') return teamRec(st.tid).w;
   if (g.k === 'rival') return Lg.games.filter((x) => x.s === st.s && x.type === 'REG' && x.played && ((x.h === st.tid && x.a === st.opp && x.hs > x.as) || (x.a === st.tid && x.h === st.opp && x.as > x.hs))).length;
+  if (g.k === 'pwin') return Lg.games.filter((x) => x.s === st.s && ['WC', 'DIV', 'CONF', 'SB'].includes(x.type) && x.played && ((x.h === st.tid && x.hs > x.as) || (x.a === st.tid && x.as > x.hs))).length;
   if (g.k === 'playoffs') return Lg.playoffs?.s === st.s && [...(Lg.playoffs.seeds?.AFC || []), ...(Lg.playoffs.seeds?.NFC || [])].includes(st.tid) ? 1 : 0;
   if (g.k === 'divwin') return Lg.playoffs?.s === st.s && ['AFC', 'NFC'].some((c) => (Lg.playoffs.seeds?.[c] || []).slice(0, 4).includes(st.tid)) ? 1 : 0;
   if (!p) return 0;
@@ -198,8 +296,8 @@ function finish(st, won) {
   let text;
   if (st.type === 'revenge') text = won ? `${NAME(p)} got his revenge: a win and ${fmt(st.goal.k, v)} ${st.goal.l} against his old team.` : `Not the homecoming ${p ? NAME(p) : 'he'} wanted against his old team.`;
   else if (T && p) text = won ? T.win(p, st.goal) : T.lose(p, st.goal, v);
-  else text = won ? ({ wins: `Nine wins and counting. Nobody is doubting the ${Lg.teams[st.tid].name} now.`, rival: `Mission accomplished against the ${Lg.teams[st.opp]?.name}. Bragging rights belong to the ${Lg.teams[st.tid].name}.`, playoffs: `Playoff football is back for the ${Lg.teams[st.tid].name}!`, divwin: `Division champions! The ${Lg.teams[st.tid].name} delivered.` }[st.goal.k] || 'Goal reached!')
-    : ({ wins: `The ${Lg.teams[st.tid].name} fell short of 9 wins. The doubters get this one.`, rival: `The ${Lg.teams[st.opp]?.name} got the better of it this year. There's always next season.`, playoffs: `No playoffs this year. Back to work.`, divwin: `No division title. A disappointing finish for a team with big expectations.` }[st.goal.k] || 'The story ends here for this season.');
+  else text = won ? ({ pwin: `A playoff win! The ${Lg.teams[st.tid].name} took care of unfinished business.`, wins: st.type === 'newera' ? `${st.goal.target} wins in year one. The new era is off to a flying start.` : `${st.goal.target} wins and counting. Nobody is doubting the ${Lg.teams[st.tid].name} now.`, rival: st.type === 'measuring' ? `The ${Lg.teams[st.tid].name} beat the defending champs. Message sent.` : `Mission accomplished against the ${Lg.teams[st.opp]?.name}. Bragging rights belong to the ${Lg.teams[st.tid].name}.`, playoffs: `Playoff football is back for the ${Lg.teams[st.tid].name}!`, divwin: `Division champions! The ${Lg.teams[st.tid].name} delivered.` }[st.goal.k] || 'Goal reached!')
+    : ({ pwin: `No playoff win this year. The business stays unfinished.`, wins: `The ${Lg.teams[st.tid].name} fell short of ${st.goal.target} wins.${st.type === 'doubters' ? ' The doubters get this one.' : ''}`, rival: st.type === 'measuring' ? `The champs showed why they're the champs. There's still a gap to close.` : `The ${Lg.teams[st.opp]?.name} got the better of it this year. There's always next season.`, playoffs: `No playoffs this year. Back to work.`, divwin: `No division title. A disappointing finish for a team with big expectations.` }[st.goal.k] || 'The story ends here for this season.');
   chapter(st, text, won);
   if (won) reward(st);
 }
@@ -247,6 +345,10 @@ export function storiesAfterWeek() {
       if (p) { chapter(st, beats[st.beat][1](p, g)); addMomentum(st.tid, 0.4); }
       st.beat++;
     }
+    if (st.type === 'measuring') {
+      const gm = Lg.games.find((x) => x.s === s && x.type === 'REG' && x.played && ((x.h === st.tid && x.a === st.opp) || (x.a === st.tid && x.h === st.opp)));
+      if (gm) { finish(st, v >= 1); continue; }
+    }
     // team stories get chapters on streaks and on each rivalry game
     if (st.type === 'rivalry') {
       const played = Lg.games.filter((x) => x.s === s && x.type === 'REG' && x.played && ((x.h === st.tid && x.a === st.opp) || (x.a === st.tid && x.h === st.opp)));
@@ -268,6 +370,7 @@ export function storiesSeasonEnd(stage) {
   for (const st of Lg.stories) {
     if (st.status !== 'active' || st.s !== season()) continue;
     if (stage === 'regular' && st.goal.by === 'playoffs') { finish(st, progress(st) >= st.goal.target); continue; }
+    if (stage === 'regular' && st.goal.by === 'final') { if (progress(st) < 1 && !(G.L.playoffs?.seeds?.AFC || []).concat(G.L.playoffs?.seeds?.NFC || []).includes(st.tid)) finish(st, false); continue; }
     if (stage === 'regular' && st.goal.by === 'season') { if (progress(st) >= st.goal.target) finish(st, true); else if (!['rookie', 'contract', 'record'].includes(st.type)) finish(st, false); continue; }
     if (stage === 'final') finish(st, progress(st) >= st.goal.target);
   }
