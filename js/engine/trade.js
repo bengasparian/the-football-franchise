@@ -163,16 +163,23 @@ export function validateTrade(t1, t2, a1, a2, { ai = false } = {}) {
     const cap = teamCap(tid, s);
     const inAmt = inc.reduce((a, pid) => a + baseOnly(Lg.players[pid], s), 0);
     const outAmt = out.reduce((a, pid) => a + capHit(Lg.players[pid], s), 0);
-    const deadAdd = out.reduce((a, pid) => a + futureProration(Lg.players[pid], s), 0);
-    if (cap.space - inAmt + outAmt - deadAdd < 0 && inAmt > 0) return `${Lg.teams[tid].abbr} would be over the salary cap (${fmtMoney(cap.space - inAmt + outAmt - deadAdd)}).`;
+    const deadAdd = out.reduce((a, pid) => a + tradeDead(Lg.players[pid], s), 0);
+    // a trade can't push a team over the cap, whether by adding salary or by leaving dead money behind
+    const delta = outAmt - inAmt - deadAdd;
+    if (delta < 0 && cap.space + delta < 0) return `${Lg.teams[tid].abbr} would be over the salary cap (${fmtMoney(cap.space + delta)})${deadAdd > outAmt ? ' because of the dead money the trade leaves behind' : ''}.`;
     const roster = Object.values(Lg.players).filter((p) => p.tid === tid && p.status !== 'PS' && p.status !== 'IR').length;
     const max = inSeasonPhase() && ph !== 'PRESEASON' ? Lg.rules.activeMax : Lg.rules.offseasonMax;
     if (!ai && roster + inc.length - out.length > max && inc.length > out.length) return `${Lg.teams[tid].abbr} would exceed the ${max}-man roster limit (release players first).`;
   }
   return null;
 }
-function baseOnly(p, s) { const y = p.contract?.years?.find((x) => x.s === s); return p.contract?.ps ? p.contract.ps : y ? y.base : 0; }
+// share of this season's salary already paid by the current team (in-season trades)
+const paidFrac = (s) => (G.L.meta.phase === 'REGULAR_SEASON' && s === G.L.meta.season && G.L.meta.week > 1 ? Math.min(1, (G.L.meta.week - 1) / 18) : 0);
+// what the acquiring team takes on this season: the salary still to be paid
+function baseOnly(p, s) { const y = p.contract?.years?.find((x) => x.s === s); return p.contract?.ps ? p.contract.ps : y ? Math.round(y.base * (1 - paidFrac(s))) : 0; }
 function futureProration(p, s) { return (p.contract?.years || []).filter((y) => y.s >= s).reduce((a, y) => a + y.bonus, 0); }
+// what stays on the old team's books as dead money
+function tradeDead(p, s) { const y = p.contract?.years?.find((x) => x.s === s); return futureProration(p, s) + (p.contract?.vd || 0) + (y && !p.contract.ps ? Math.round(y.base * paidFrac(s)) : 0); }
 
 export function evaluateTrade(userTid, aiTid, give, get) {
   // give: assets userTid sends; get: assets userTid receives (from aiTid)
@@ -202,11 +209,16 @@ export function executeTrade(t1, t2, a1, a2, { silent = false } = {}) {
   const s = capSeason();
   const move = (pid, from, to) => {
     const p = Lg.players[pid];
-    const prorate = futureProration(p, s);
+    // The old team keeps every bonus dollar it already paid (remaining proration and void-year money) as dead
+    // money, plus the share of this season's salary it has paid so far. The new team takes on the rest of the salary.
+    const prorate = tradeDead(p, s);
+    const cur = p.contract?.years?.find((y) => y.s === s);
+    if (cur && !p.contract.ps && paidFrac(s) > 0) { cur.base -= Math.round(cur.base * paidFrac(s)); cur.gtd = Math.min(cur.gtd || 0, cur.base); }
     if (prorate > 0) {
       Lg.teams[from].dead ||= [];
       Lg.teams[from].dead.push({ s, amt: prorate, pid, name: `${p.fn} ${p.ln}`, trade: true });
-      for (const y of p.contract.years) y.bonus = 0;
+      for (const y of p.contract.years || []) y.bonus = 0;
+      if (p.contract) p.contract.vd = 0;
     }
     removeFromDepth(p);
     const req = !!p.tradeReq;
@@ -415,7 +427,7 @@ function aiTradeAttempt() {
       if (p.r.ovr < nf.worstStarter + 4) continue; // must be a real upgrade for the buyer
       // quarterbacks only move to a team that truly needs one, and nobody eats a giant dead-money hit to deal a player
       if (p.pos === 'QB' && p.r.ovr < nf.worstStarter + 7) continue;
-      if (futureProration(p, capSeason()) > capFor(capSeason()) * 0.06) continue;
+      if (tradeDead(p, capSeason()) > capFor(capSeason()) * 0.05) continue;
       const want = { players: [p.pid], picks: [] };
       const off = balanceForTarget(buyer, seller, { players: [], picks: [] }, want, { picksOnly: true });
       if (!off) continue;

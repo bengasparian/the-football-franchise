@@ -7,18 +7,18 @@ import { faTick, faStatus } from './fa.js';
 import { DEV, DEV_INFO, longevityLabel } from './dev.js';
 import { generateStories, storiesFor } from './storylines.js';
 import { PREP_FOCUS, PREP_INT, prepActive, prepFor, prepOptions, setUserPrep, unitProfile, gradeFor } from './prep.js';
-import { G, age, capFor, clamp, setRngState, rngState, fmtMoney, isUser, news, transaction } from './core.js';
+import { G, age, capFor, clamp, setRngState, rngState, fmtMoney, isUser, news, transaction, minSalary, psSalary } from './core.js';
 import { POSITIONS, POS_NAMES, PHASE_LABEL, ROUND_LABEL, DEFAULT_SLIDERS, SLIDER_INFO, DEPTH_SLOTS } from './const.js';
 import { createLeague } from './league.js';
 import { ATTR_NAMES, ATTRS, OVR_W, potLabel, teamOvr, computeOvr, setOvr } from './ratings.js';
 import { personalityLabels } from './personality.js';
 import { marketValue, playerAsk, negotiate, signContract, teamCap, capSeason, futureCommitments, deadMoneyIfCut, releasePlayer, restructurePreview,
-  restructure, applyTag, tagValues, exerciseOption, fifthYearOptionValue, capHit, psDeal, minDeal, idealYears, negotiationOptions, makeContract } from './contracts.js';
+  restructure, applyTag, tagValues, exerciseOption, fifthYearOptionValue, capHit, psDeal, minDeal, idealYears, negotiationOptions, makeContract, setCapAll, upgradeVoidYears } from './contracts.js';
 import { autoDepth, setDepth, rosterCounts } from './roster.js';
 import { OFF_SCHEMES, DEF_SCHEMES, ROLES, teamScheme, teamFit, playerFit, fitLabel, resolveRoles, roleScore } from './schemes.js';
 import { placeOnIR, activateFromIR } from './injuries.js';
 import { computeStandings, playoffSeeds, divisionOrder, clinchMarkers } from './standings.js';
-import { simUntil, advance, superBowlNumeral, userBlocker } from './season.js';
+import { simUntil, advance, superBowlNumeral, userBlocker, staffCapFix } from './season.js';
 import { freeAgents, userOffer, offerScore } from './fa.js';
 import { evaluateTrade, executeTrade, tradeFinder, makeItWork, pickLabel, playerTradeValue, pickTradeValue, projectedPickNo, teamMode } from './trade.js';
 import { prospects, scoutProspect, scoutedView, draftCurrentPick, simDraftToUser, userOnClock, SCOUT_COST, draftClock, draftTick, simDraftPicks, simDraftRound, autoScout, upgradeCombines } from './draft.js';
@@ -171,6 +171,7 @@ function todoList(tid, ctx) {
   const offers = Lg.offers.filter((o) => o.toTid === tid && o.status === 'open').length;
   const evs = Lg.events.filter((e) => e.tid === tid && e.open).length;
   if (evs) add(`Respond to ${evs} front-office decision${evs > 1 ? 's' : ''}`, '#/home', true);
+  { const cs = teamCap(tid); if (cs.space < 0) add(`Get under the ${cs.season} salary cap (${fmtMoney(-cs.space)} over)`, '#/cap', true); }
   if (prepActive() && nextPrepGame(tid)) { const g = nextPrepGame(tid); const pr = prepFor(tid, g.h === tid ? g.a : g.h); add(pr.auto ? `Plan this week's prep (your staff picked ${PREP_FOCUS[pr.focus].label}, ${pr.grade})` : `Week prep set: ${PREP_FOCUS[pr.focus].label} · ${pr.grade}`, '#/prep', false, !pr.auto); }
   if (offers) add(`Review ${offers} trade offer${offers > 1 ? 's' : ''}`, '#/offers');
   if (cap.space < 0) add(`Get under the salary cap (${Math.round(cap.space / 1e5) / 10}M)`, '#/cap', true);
@@ -520,7 +521,41 @@ export function capSheet({ tid }, ctx) {
   const ps = Object.values(Lg.players).filter((p) => p.tid === tid).map((p) => ({ ...pRow(p), years: (p.contract?.years || []).filter((y) => y.s >= s).map((y) => ({ s: y.s, hit: y.base + y.bonus, gtd: y.gtd })), dead: p.contract ? deadMoneyIfCut(p) : null }));
   ps.sort((a, b) => (b.contract?.hit || 0) - (a.contract?.hit || 0));
   const t = T(tid);
-  return { team: teamLite(t), cap: teamCap(tid), future: futureCommitments(tid, 5), players: ps, dead: (t.dead || []).filter((d) => d.s >= s), tags: tagValues(s), caps: Object.fromEntries([0, 1, 2, 3, 4].map((i) => [s + i, capFor(s + i)])), mine: own(ctx, tid), season: s };
+  const cap = teamCap(tid);
+  const ph = Lg.meta.phase;
+  const top51 = ['SEASON_END', 'RESIGN', 'FREE_AGENCY', 'LEAGUE_MEETING', 'DRAFT', 'POST_DRAFT', 'TRAINING_CAMP', 'PRESEASON'].includes(ph);
+  // Week 1 projection while the top-51 rule is on: the 53 biggest deals plus a practice squad, with everything else the same
+  let week1 = null;
+  if (top51) {
+    const mine = Object.values(Lg.players).filter((p) => p.tid === tid);
+    const hits = mine.filter((p) => p.status !== 'PS').map((p) => capHit(p, s)).filter((h) => h > 0).sort((a, b) => b - a);
+    const n53 = hits.slice(0, 53).reduce((a, b) => a + b, 0) + Math.max(0, 53 - hits.length) * minSalary(0, s);
+    const psN = mine.filter((p) => p.status === 'PS');
+    const psCost = psN.length ? psN.reduce((a, p) => a + (p.contract?.ps || psSalary(p.exp ?? 0, s)), 0) : Lg.rules.psMax * psSalary(0, s);
+    week1 = { space: Math.round(cap.cap - cap.dead - n53 - psCost), roster: n53, ps: psCost };
+  }
+  // void-year money that comes due when a deal ends
+  const voids = Object.values(Lg.players).filter((p) => p.tid === tid && p.contract?.vd > 0 && !p.contract.ps).map((p) => ({ pid: p.pid, name: `${p.fn} ${p.ln}`, amt: p.contract.vd, s: p.contract.exp + 1 })).sort((a, b) => a.s - b.s || b.amt - a.amt);
+  return { team: teamLite(t), cap, base: capFor(s), top51, week1, voids, future: futureCommitments(tid, 5), players: ps, dead: (t.dead || []).filter((d) => d.s >= s), tags: tagValues(s), caps: Object.fromEntries([0, 1, 2, 3, 4].map((i) => [s + i, capFor(s + i)])), mine: own(ctx, tid), season: s, phase: ph,
+    real: Lg.meta.capSrc || null };
+}
+// "Have my staff fix it": restructures first, then releases, until the team is under the cap
+export function capFix({ tid, week1 }, ctx) {
+  requireOwn(ctx, tid);
+  if (!week1) return staffCapFix(tid);
+  const Lg = L();
+  if (Lg.meta.phase === 'PRESEASON') { setCapAll(true); try { return staffCapFix(tid); } finally { setCapAll(false); } }
+  // Earlier in the offseason, aim at the projected Week 1 number (53 players + practice squad), not all 90 contracts
+  const cs = capSheet({ tid }, ctx);
+  const gap = cs.week1 ? cs.cap.space - cs.week1.space : 0;
+  if (!(gap > 0) || cs.week1.space >= 0) return staffCapFix(tid);
+  const t = Lg.teams[tid], s = cs.cap.season;
+  t.capAdj ||= {};
+  const keep = t.capAdj[s];
+  t.capAdj[s] = (keep || 0) - gap;
+  const waiver = t.capWaiver;
+  try { const r = staffCapFix(tid); r.space = teamCap(tid).space; return r; }
+  finally { if (keep == null) delete t.capAdj[s]; else t.capAdj[s] = keep; if (t.capWaiver !== waiver) t.capWaiver = waiver; }
 }
 export function releaseP({ pid, june1 }, ctx) {
   const p = L().players[pid]; requireOwn(ctx, p.tid);
@@ -837,7 +872,8 @@ export function dismissFired({ tid }) { (G.L.meta.firedNotices || []).forEach((f
 export function sim({ target }, ctx) {
   if (G.L.meta.online && !ctx.host) return { error: 'Only the host can advance the league.' };
   const t = target || 'week';
-  if (t === 'week') return simUntil(t);
+  // one step (a week, or the next offseason phase): your own settings apply
+  if (t === 'week' || t === 'draftnext' || (t === 'phase' && !['REGULAR_SEASON', 'PRESEASON', 'PLAYOFFS'].includes(G.L.meta.phase))) return simUntil(t);
   // Simming more than one week: your staff handles everything a team has to do (injury moves, IR, filling the
   // roster, the depth chart) so the sim never stops for chores. Week-by-week, your own settings apply.
   const au = G.L.settings.autoUser;
@@ -959,7 +995,7 @@ export function editPlayer({ pid, ch = {} }, ctx) {
 }
 
 // one-time fixes for saves made with older versions (returns true if anything changed)
-export function upgradeSave() { return upgradeCombines(); }
+export function upgradeSave() { const a = upgradeCombines(); const b = upgradeVoidYears(); return a || b; }
 
 // ------------------------------------------------------------------ weekly prep (like Madden weekly training)
 function nextPrepGame(tid) {

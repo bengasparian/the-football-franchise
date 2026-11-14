@@ -7,7 +7,7 @@ import { REAL_HISTORY } from './history.js';
 import { genAttrs, initTalent, computeOvr, projectPeak, captureRefDist, setOvr, refreshTeamRef } from './ratings.js';
 import { initDevTraits, initLongevity, applyKnownPersonality } from './dev.js';
 import { genPersonality } from './personality.js';
-import { contractFromData, makeContract, minDeal, psDeal, rookieContract, marketValue, teamCap } from './contracts.js';
+import { contractFromData, makeContract, minDeal, psDeal, rookieContract, marketValue, teamCap, capHit } from './contracts.js';
 import { initCoaches } from './coaches.js';
 import { autoDepth } from './roster.js';
 import { genDraftClass } from './draft.js';
@@ -132,11 +132,44 @@ export function createLeague(data, opts) {
       if (user) news(`Your roster was trimmed to ${L.rules.activeMax}. Released players are in the free agent pool if you want them back.`, { type: 'system', tids: [t.tid], user: true });
     }
   }
-  // Real teams roll unused cap forward and are always compliant. The public data has no rollover
-  // amounts, so give any team that would start over the cap a rollover that puts it just under.
+  // A few real practice squads list more players than the limit (injured and exempt players); trim the extras so
+  // nobody starts a league with a roster error.
   for (const t of L.teams) {
+    const ps = Object.values(L.players).filter((p) => p.tid === t.tid && p.status === 'PS').sort((a, b) => a.r.ovr - b.r.ovr);
+    for (const p of ps.slice(0, Math.max(0, ps.length - (L.rules.psMax + 1)))) { p.tid = -1; p.status = 'FA'; p.contract = null; }
+  }
+  // The real cap picture (Over The Cap). Player contracts alone don't reproduce a team's cap room: money still owed
+  // to players it already released or traded (dead money) and unused room carried over from last year aren't in
+  // them. So every team starts from its real numbers:
+  //  - this season's and next season's real dead money go on the books
+  //  - carryover + league adjustments are set so the team starts with exactly its real cap space
+  //  - next season uses the projected league cap, and real commitments the roster data doesn't carry are counted
+  const RC = opts.fantasy ? null : data.cap?.teams;
+  if (data.cap?.nextCap && !opts.fantasy) L.meta.caps[S0 + 1] = data.cap.nextCap;
+  if (RC) L.meta.capSrc = { asOf: data.cap.asOf || null };
+  L.meta.capV = 2;
+  for (const t of L.teams) {
+    const rc = RC?.[t.abbr];
+    if (!rc) {
+      const c = teamCap(t.tid, S0);
+      if (c.space < 3e6) t.rollover[S0] = Math.round((3e6 - c.space + rnd() * 4e6) / 1e5) * 1e5;
+      continue;
+    }
+    const mine = Object.values(L.players).filter((p) => p.tid === t.tid);
+    if (rc.dead > 0) t.dead.push({ s: S0, amt: rc.dead, name: 'Players released or traded before this save began', real: true });
+    if (rc.dead2 > 1e5) t.dead.push({ s: S0 + 1, amt: rc.dead2, name: 'Players released or traded before this save began', real: true });
+    // carryover from last year + league adjustments: whatever makes the team start with exactly its real cap space
     const c = teamCap(t.tid, S0);
-    if (c.space < 3e6) t.rollover[S0] = Math.round((3e6 - c.space + rnd() * 4e6) / 1e5) * 1e5;
+    t.rollover[S0] = Math.round(rc.space - (capFor(S0) - c.used));
+    if (rc.active2) {
+      // next season's real commitments versus the contracts we have (plus void-year money the game will charge when
+      // this year's deals run out). The difference is real money owed to players who aren't on the roster in this
+      // save (reserve lists, pending moves), or deals our data prices a little differently.
+      const top = mine.filter((p) => p.status !== 'PS').map((p) => capHit(p, S0 + 1)).filter((h) => h > 0).sort((x, y) => y - x).slice(0, 51).reduce((x, y) => x + y, 0);
+      const voidSoon = mine.reduce((a, p) => a + (p.contract?.exp === S0 && !p.contract.ps ? p.contract.vd || 0 : 0), 0);
+      const gap = rc.active2 - top - voidSoon;
+      if (Math.abs(gap) > 1.5e6) (t.capAdj ||= {})[S0 + 1] = -Math.round(gap);
+    }
   }
   // expected wins (preseason projection) from roster strength
   setExpectations();

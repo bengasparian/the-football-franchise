@@ -225,7 +225,7 @@ export async function act(method, args, { msg = null, refresh = true, busyText =
   try {
     const r = await call(method, args);
     if (busyText) busy(false);
-    if (r?.error) { toast(esc(r.error), 'error'); return r; }
+    if (r?.error) { toast(esc(r.error), 'error', r.capBlock ? 9000 : undefined); if (r.capBlock && !location.hash.startsWith('#/cap')) location.hash = '#/cap'; return r; }
     if (msg) toast(typeof msg === 'function' ? msg(r) : msg, 'good');
     if (refresh) await rerender();
     return r;

@@ -79,6 +79,8 @@ export function contractFromData(k, exp) {
   return {
     years: yrs, signed: k.signed, apy: k.apy, total: k.tot, gtd: k.gtd, exp: yrs[yrs.length - 1].s,
     rookie: k.type === 'Drafted', udfa: k.type === 'UDFA', type: k.type, real: true, exp_yrs: exp,
+    // bonus money parked in void years: becomes dead money for the team when the deal ends
+    ...(k.vd ? { vd: k.vd } : {}),
   };
 }
 export function capHit(p, s) {
@@ -97,25 +99,33 @@ export function capSeason() {
   return ['SEASON_END', 'RESIGN'].includes(G.L.meta.phase) ? G.L.meta.season + 1 : G.L.meta.season;
 }
 
+// Final cutdown: rosters are being set for Week 1, so every contract counts (not just the top 51)
+let CAP_ALL = false;
+export function setCapAll(v) { CAP_ALL = !!v; }
 export function teamCap(tid, s = capSeason()) {
   const Lg = G.L;
   const t = Lg.teams[tid];
   const ps = Object.values(Lg.players).filter((p) => p.tid === tid);
-  const offseason = ['SEASON_END', 'RESIGN', 'FREE_AGENCY', 'LEAGUE_MEETING', 'DRAFT', 'POST_DRAFT', 'TRAINING_CAMP', 'FANTASY_DRAFT'].includes(Lg.meta.phase);
+  // Top-51 rule: from the end of the season until Week 1 (preseason included) only the 51 biggest cap hits count
+  const offseason = !CAP_ALL && ['SEASON_END', 'RESIGN', 'FREE_AGENCY', 'LEAGUE_MEETING', 'DRAFT', 'POST_DRAFT', 'TRAINING_CAMP', 'PRESEASON', 'FANTASY_DRAFT'].includes(Lg.meta.phase);
   let hits = ps.map((p) => ({ p, h: p.status === 'PS' ? (p.contract?.ps || psSalary(p.exp, s)) : capHit(p, s) }));
   // a future league year is counted the way the real cap sites do: only the top 51 contracts count (that's the
   // offseason rule), the practice squad doesn't count yet, and this year's unused room is projected to roll over
-  const future = s > Lg.meta.season && !offseason;
+  const future = s > Lg.meta.season && !offseason && !CAP_ALL;
   let used;
   if (offseason || future) {
     const sorted = hits.filter((x) => x.p.status !== 'PS' && x.h > 0).sort((a, b) => b.h - a.h);
     used = sorted.slice(0, 51).reduce((a, x) => a + x.h, 0);
   } else used = hits.reduce((a, x) => a + x.h, 0);
-  const dead = (t.dead || []).filter((d) => d.s === s).reduce((a, d) => a + d.amt, 0);
+  // bonus money parked in void years comes due the year after a deal ends (unless the player is re-signed first)
+  const voidDue = ps.reduce((a, p) => a + (p.contract?.vd && !p.contract.ps && p.contract.exp < s ? p.contract.vd : 0), 0);
+  const dead = (t.dead || []).filter((d) => d.s === s).reduce((a, d) => a + d.amt, 0) + voidDue;
   let roll = t.rollover?.[s] || 0;
   if (future && s === Lg.meta.season + 1 && t.rollover?.[s] == null) roll = Math.max(0, Math.min(45e6, teamCap(tid, Lg.meta.season).space));
-  const cap = capFor(s) + roll;
-  return { cap, used: used + dead, dead, space: cap - used - dead, season: s, rollover: roll, projected: future };
+  // real-life commitments the contract data doesn't carry (see league creation)
+  const adj = t.capAdj?.[s] || 0;
+  const cap = capFor(s) + roll + adj;
+  return { cap, used: used + dead, dead, voidDue, space: cap - used - dead, season: s, rollover: roll, adj, projected: future };
 }
 export const capSpace = (tid, s) => teamCap(tid, s).space;
 
@@ -142,8 +152,9 @@ export function deadMoneyIfCut(p, { june1 = false } = {}) {
   const gtdRem = rem.reduce((a, y) => a + y.gtd, 0);
   const curHit = curr ? curr.base + curr.bonus : 0;
   let now, next;
-  if (june1 && rem.length > 1) { now = (curr?.bonus || 0) + (curr?.gtd || 0); next = futurePro + (gtdRem - (curr?.gtd || 0)); }
-  else { now = (curr?.bonus || 0) + futurePro + gtdRem; next = 0; }
+  const vd = c.vd || 0; // void-year bonus money accelerates too
+  if (june1 && rem.length > 1) { now = (curr?.bonus || 0) + (curr?.gtd || 0); next = futurePro + vd + (gtdRem - (curr?.gtd || 0)); }
+  else { now = (curr?.bonus || 0) + futurePro + vd + gtdRem; next = 0; }
   if (inSeasonPhase() && G.L.meta.phase === 'REGULAR_SEASON') {
     // part of this season's base already paid; the rest is saved unless guaranteed
     const frac = (G.L.meta.week - 1) / 18;
@@ -178,32 +189,36 @@ export function removeFromDepth(p) {
   for (const k in t.depth) t.depth[k] = t.depth[k].filter((x) => x !== p.pid);
 }
 
-// Convert base salary into a prorated bonus to create cap room this year
+// Convert base salary into a prorated bonus to create cap room this year. Like real teams, the bonus is always
+// spread over five years: if the deal has fewer years left, the rest sits in void years and comes due as dead
+// money when the contract ends.
 export function restructurePreview(p) {
   const c = p.contract;
-  if (!c || c.rookie || p.status === 'PS') return null;
+  if (!c || c.rookie || c.tag || p.status === 'PS') return null;
   const s = capSeason();
   const rem = c.years.filter((y) => y.s >= s);
-  if (rem.length < 2) return null;
+  if (rem.length < 1) return null;
   const curr = rem[0];
   const conv = Math.max(0, curr.base - minSalary(p.exp ?? 0, s));
   if (conv < 1_000_000) return null;
-  const n = Math.min(rem.length, 5);
+  const n = 5;
   const per = conv / n;
-  return { convert: conv, saves: Math.round(conv - per), addPerYear: Math.round(per), years: n };
+  const real = Math.min(rem.length, n);
+  return { convert: conv, saves: Math.round(conv - per), addPerYear: Math.round(per), years: real, voidYears: n - real, voidMoney: Math.round(per * (n - real)) };
 }
 export function restructure(pid) {
   const Lg = G.L;
   const p = Lg.players[pid];
   const pr = restructurePreview(p);
-  if (!pr) return { error: 'This contract cannot be restructured (needs 2+ years left and base salary above the minimum).' };
+  if (!pr) return { error: 'This contract cannot be restructured (the base salary is already near the minimum, or it is a rookie deal or a tag).' };
   const s = capSeason();
   const rem = p.contract.years.filter((y) => y.s >= s);
   rem[0].base -= pr.convert;
   rem[0].gtd = Math.max(0, rem[0].gtd - pr.convert);
   for (let i = 0; i < pr.years; i++) rem[i].bonus += pr.addPerYear;
+  if (pr.voidMoney > 0) p.contract.vd = (p.contract.vd || 0) + pr.voidMoney;
   p.contract.restructures = (p.contract.restructures || 0) + 1;
-  transaction('restructure', `${Lg.teams[p.tid].abbr} restructured ${p.fn} ${p.ln}'s contract, clearing ${fmtMoney(pr.saves)} of ${s} cap space`, { tids: [p.tid], pids: [pid] });
+  transaction('restructure', `${Lg.teams[p.tid].abbr} restructured ${p.fn} ${p.ln}'s contract, clearing ${fmtMoney(pr.saves)} of ${s} cap space${pr.voidMoney ? ` (${fmtMoney(pr.voidMoney)} pushed into void years)` : ''}`, { tids: [p.tid], pids: [pid] });
   return { ok: true, ...pr };
 }
 
@@ -270,6 +285,7 @@ export function applyTag(pid, kind = 'F') {
   let amt = kind === 'T' ? tv.T : tv.F;
   amt = Math.max(amt, prev * (times === 0 ? 1.2 : times === 1 ? 1.2 : 1.44));
   if (times >= 1 && kind === 'F') amt = Math.max(amt, prev * 1.2);
+  chargeVoidMoney(p, s); // his old deal still voids
   p.contract = makeContract({ start: s, years: 1, apy: amt, gtd: amt, sbPct: 0, extra: { tag: kind } });
   (p.tagged ||= []).push(s);
   t.tagUsed = s;
@@ -430,7 +446,8 @@ export function signContract(pid, tid, offer, { start = null, type = 'sign' } = 
   const Lg = G.L;
   const p = Lg.players[pid];
   const t = Lg.teams[tid];
-  const s = start ?? (Lg.meta.phase === 'RESIGN' ? Lg.meta.season + 1 : Lg.meta.season);
+  // once the season is over, every new deal starts with the next league year
+  const s = start ?? capSeason();
   const maxApy = capFor(s) * ({ QB: 0.228, EDGE: 0.17, WR: 0.15, DT: 0.135 }[p.pos] ?? 0.13);
   if (offer.apy > maxApy) offer = { ...offer, apy: Math.round(maxApy / 10000) * 10000, gtd: Math.min(offer.gtd, Math.round(maxApy * offer.years)) };
   let c;
@@ -447,8 +464,11 @@ export function signContract(pid, tid, offer, { start = null, type = 'sign' } = 
     const n = Math.min(5, allYears.length);
     allYears.slice(0, n).forEach((y) => { y.bonus += Math.round(sb / n); });
     c = { ...newC, years: allYears, exp: allYears[allYears.length - 1].s, signed: Lg.meta.season, extendedFrom: p.contract.apy };
+    spreadVoid(c, p.contract.vd, newC.years);
   } else {
     c = makeContract({ start: s, years: offer.years, apy: offer.apy, gtd: offer.gtd });
+    // re-signing your own player before his old deal voids keeps that bonus money spread out instead of hitting at once
+    if (p.tid === tid && p.contract?.vd && p.contract.exp < s) spreadVoid(c, p.contract.vd, c.years);
   }
   const wasTeam = p.tid;
   if (p.tid !== tid) { removeFromDepth(p); p.yrsWithTeam = 0; }
@@ -461,6 +481,24 @@ export function signContract(pid, tid, offer, { start = null, type = 'sign' } = 
   return { ok: true, contract: c };
 }
 
+// old void-year bonus money keeps prorating over the first years of the new deal (up to 4)
+function spreadVoid(c, vd, years) {
+  if (!vd || !years.length) return;
+  const n = Math.min(4, years.length);
+  years.slice(0, n).forEach((y) => { y.bonus += Math.round(vd / n); });
+  c.voidCarried = vd;
+}
+// when a deal runs out, bonus money parked in its void years hits the team's cap for the new league year
+export function chargeVoidMoney(p, season) {
+  const c = p.contract;
+  const t = G.L.teams[p.tid];
+  if (!c?.vd || !t) return 0;
+  (t.dead ||= []).push({ s: season, amt: c.vd, pid: p.pid, name: `${p.fn} ${p.ln} (void years)`, void: true });
+  const amt = c.vd;
+  c.vd = 0;
+  return amt;
+}
+
 export function minDeal(p, s) {
   const amt = minSalary(p.exp ?? 0, s);
   return makeContract({ start: s, years: 1, apy: amt, gtd: 0, sbPct: 0, min: true });
@@ -469,3 +507,29 @@ export function psDeal(p, s) {
   return { years: [], signed: s, apy: psSalary(p.exp ?? 0, s), total: psSalary(p.exp ?? 0, s), gtd: 0, exp: s, ps: psSalary(p.exp ?? 0, s) };
 }
 void rnd; void gauss;
+
+// Saves made before void years were handled: real contracts carried their void years as if the player were still
+// under contract (for free). End those deals where they really end and turn the parked bonus money into void money.
+export function upgradeVoidYears() {
+  const Lg = G.L;
+  if (!Lg || Lg.meta.capV >= 2) return false;
+  const now = Lg.meta.season;
+  let n = 0;
+  for (const p of Object.values(Lg.players)) {
+    const c = p.contract;
+    if (!c || !c.real || c.ps || c.vd != null || !c.years?.length) continue;
+    const ys = c.years;
+    let cut = ys.length, V = 0;
+    while (cut > 1 && ys[cut - 1].s > now && ys[cut - 1].base < 100_000) { V += ys[cut - 1].bonus; cut--; }
+    if (cut === ys.length) continue;
+    // the first void season often shows the whole charge at once: its "salary" equals the bonus parked after it
+    const last = ys[cut - 1];
+    if (V > 0 && cut > 1 && last.s > now && Math.abs(last.base - V) <= Math.max(60_000, V * 0.03)) { V += last.bonus; cut--; }
+    c.years = ys.slice(0, cut);
+    c.exp = c.years[c.years.length - 1].s;
+    if (V > 0) c.vd = Math.round(V);
+    n++;
+  }
+  Lg.meta.capV = 2;
+  return n > 0;
+}

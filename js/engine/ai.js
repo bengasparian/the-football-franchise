@@ -1,5 +1,5 @@
 // AI general managers: weekly roster care, re-signing, tags, options, cap compliance, cutdowns, extensions.
-import { G, rnd, gauss, clamp, age, news, transaction, minSalary, isUser } from './core.js';
+import { G, rnd, gauss, clamp, age, news, transaction, minSalary, isUser, capFor } from './core.js';
 import { marketValue, playerAsk, signContract, teamCap, capSeason, releasePlayer, restructure, restructurePreview, applyTag, exerciseOption,
   deadMoneyIfCut, capHit, psDeal, idealGtdPct, minDeal } from './contracts.js';
 import { autoDepth } from './roster.js';
@@ -94,14 +94,19 @@ export function aiResignPhase(tid) {
     const a = age(p, cs);
     const ask = playerAsk(p, tid);
     const val = keepValue(p, tid);
-    const wants = p.r.ovr >= 70 && (a <= 30 || p.r.ovr >= 80) && !(mode === 'rebuild' && a >= 30 && p.r.ovr < 85) && !p.tradeReq;
-    const affordable = ask.apy < space * 0.55;
-    const willing = (p.morale ?? 60) > 35 || (p.pers?.loyal ?? 0.5) > 0.65;
-    if (wants && affordable && willing && rnd() < 0.75 + (p.pers?.loyal ?? 0.5) * 0.2) {
-      const yrs = clamp(ask.years, 1, 5);
+    // Void-year money comes due if he walks, but keeps spreading if he's re-signed. When that bill is bigger than
+    // the first year of a new deal, keeping him is the cheaper move (how real teams handle void years).
+    const vd = p.contract.vd || 0;
+    const relief = vd * (2 / 3);
+    const voidKeep = vd > capFor(cs) * 0.02 && p.r.ovr >= 72 && a <= 35 && !p.tradeReq && vd >= ask.apy * 0.85 + vd / 3 - relief * 0.5;
+    const wants = (p.r.ovr >= 70 && (a <= 30 || p.r.ovr >= 80) && !(mode === 'rebuild' && a >= 30 && p.r.ovr < 85) && !p.tradeReq) || voidKeep;
+    const affordable = ask.apy < (space + relief) * 0.55 || voidKeep;
+    const willing = (p.morale ?? 60) > 35 || (p.pers?.loyal ?? 0.5) > 0.65 || voidKeep;
+    if (wants && affordable && willing && rnd() < (voidKeep ? 0.97 : 0.75 + (p.pers?.loyal ?? 0.5) * 0.2)) {
+      const yrs = clamp(a >= 33 ? Math.min(2, ask.years) : ask.years, 1, 5);
       const offer = { years: yrs, apy: Math.round(ask.apy * (1 + gauss(0, 0.03)) / 10000) * 10000, gtd: Math.round(ask.apy * yrs * ask.gtdPct / 10000) * 10000 };
       signContract(p.pid, tid, offer, { start: cs });
-      space -= offer.apy;
+      space += relief - offer.apy;
     } else if (!tagged && Lg.rules.franchiseTag && p.r.ovr >= 84 && a <= 30 && !p.tagged?.includes(s) && space > 25e6) {
       const r = applyTag(p.pid, 'F');
       if (r.ok) { tagged = true; space -= r.amount; }
@@ -124,30 +129,57 @@ export function aiTenders(tid) {
   }
 }
 
-export function aiCapCompliance(tid, s = capSeason()) {
+export function aiCapCompliance(tid, s = capSeason(), { noCuts = false } = {}) {
   const Lg = G.L;
   let cap = teamCap(tid, s);
   let guard = 0;
   while (cap.space < 0 && guard++ < 45) {
     // restructure the biggest eligible contract first
     const ps = Object.values(Lg.players).filter((p) => p.tid === tid && p.contract && !p.contract.ps);
-    const rs = ps.map((p) => ({ p, pr: restructurePreview(p) })).filter((x) => x.pr && x.pr.saves > 1e6 && (x.p.contract.restructures || 0) < (guard > 15 ? 4 : 2)).sort((a, b) => b.pr.saves - a.pr.saves)[0];
+    // don't bury an aging player's deal in void-year money: it all comes due the day he leaves
+    const voidOk = (x, loose) => (x.p.contract.vd || 0) + x.pr.voidMoney <= capFor(s) * (age(x.p, s) >= 32 ? 0.07 : 0.14) * (loose ? 1.6 : 1);
+    const rs = ps.map((p) => ({ p, pr: restructurePreview(p) })).filter((x) => x.pr && x.pr.saves > 1e6 && voidOk(x) && (x.p.contract.restructures || 0) < (guard > 15 ? 4 : 2)).sort((a, b) => (b.pr.saves - b.pr.voidMoney * 0.6) - (a.pr.saves - a.pr.voidMoney * 0.6))[0];
     if (rs) { restructure(rs.p.pid); cap = teamCap(tid, s); continue; }
     // cut the worst value-for-money veteran with savings
     // never cut a franchise player or anyone whose dead money dwarfs the savings
     const qb1 = Lg.teams[tid].depth.QB?.[0];
     const cuts = ps.map((p) => ({ p, d: deadMoneyIfCut(p) })).filter((x) => x.d.save > 1e6 && x.p.pid !== qb1 && x.p.r.ovr < 86 && x.d.now <= x.d.save * 1.5)
       .sort((a, b) => (keepValue(a.p, tid) / Math.max(1, a.d.save)) - (keepValue(b.p, tid) / Math.max(1, b.d.save)));
-    if (cuts[0]) { releasePlayer(cuts[0].p.pid); cap = teamCap(tid, s); continue; }
+    if (cuts[0] && !noCuts) { releasePlayer(cuts[0].p.pid); cap = teamCap(tid, s); continue; }
     // last resort: more restructures, then any non-QB1 cut that still saves real money
-    const rs2 = ps.map((p) => ({ p, pr: restructurePreview(p) })).filter((x) => x.pr && x.pr.saves > 1e6 && (x.p.contract.restructures || 0) < 6).sort((a, b) => b.pr.saves - a.pr.saves)[0];
+    const rs2 = ps.map((p) => ({ p, pr: restructurePreview(p) })).filter((x) => x.pr && x.pr.saves > 1e6 && voidOk(x, true) && (x.p.contract.restructures || 0) < 6).sort((a, b) => b.pr.saves - a.pr.saves)[0];
     if (rs2) { restructure(rs2.p.pid); cap = teamCap(tid, s); continue; }
     const cuts2 = ps.map((p) => ({ p, d: deadMoneyIfCut(p) })).filter((x) => x.d.save > 2e6 && x.p.pid !== qb1).sort((a, b) => (keepValue(a.p, tid) / a.d.save) - (keepValue(b.p, tid) / b.d.save));
-    if (cuts2[0]) { releasePlayer(cuts2[0].p.pid); cap = teamCap(tid, s); continue; }
+    if (cuts2[0] && !noCuts) { releasePlayer(cuts2[0].p.pid); cap = teamCap(tid, s); continue; }
     // post-June 1 designation: spreads the dead money over two years so the cut actually clears space now
     const cuts3 = ps.map((p) => ({ p, d: deadMoneyIfCut(p, { june1: true }) })).filter((x) => x.d.save > 3e6 && x.p.pid !== qb1).sort((a, b) => (keepValue(a.p, tid) / a.d.save) - (keepValue(b.p, tid) / b.d.save));
-    if (cuts3[0]) { releasePlayer(cuts3[0].p.pid, { june1: true }); cap = teamCap(tid, s); continue; }
+    if (cuts3[0] && !noCuts) { releasePlayer(cuts3[0].p.pid, { june1: true }); cap = teamCap(tid, s); continue; }
+    // out of normal options: restructure anything left, whatever it parks in void years
+    const rs3 = ps.map((p) => ({ p, pr: restructurePreview(p) })).filter((x) => x.pr && x.pr.saves > 5e5).sort((a, b) => b.pr.saves - a.pr.saves)[0];
+    if (rs3) { restructure(rs3.p.pid); cap = teamCap(tid, s); continue; }
     break;
+  }
+  // Still over with nothing left to restructure or cut (a roster of minimum salaries and bonus money). So the league
+  // keeps working, the rest of this year's dead money is pushed to next year, like a post-June 1 release.
+  if (cap.space < 0) {
+    const t = Lg.teams[tid];
+    let need = -cap.space + 1e6;
+    for (const p of Object.values(Lg.players)) {
+      if (need <= 0) break;
+      if (p.tid === tid && p.contract?.vd && !p.contract.ps && p.contract.exp < s) { // void money that just came due
+        (t.dead ||= []).push({ s, amt: p.contract.vd, pid: p.pid, name: `${p.fn} ${p.ln} (void years)`, void: true });
+        p.contract.vd = 0;
+      }
+    }
+    for (const d of (t.dead || []).filter((x) => x.s === s && x.amt > 0 && !x.deferred).sort((a, b) => b.amt - a.amt)) {
+      if (need <= 0) break;
+      const mv = Math.min(d.amt, need);
+      d.amt -= mv; need -= mv;
+      t.dead.push({ s: s + 1, amt: mv, pid: d.pid, name: `${d.name} (deferred from ${s})`, deferred: true });
+    }
+    t.dead = t.dead.filter((d) => d.amt > 0);
+    if (need < -cap.space + 1e6) transaction('cap', `${t.abbr} deferred ${Math.round((-cap.space + 1e6 - need) / 1e5) / 10}M of dead money to ${s + 1} to get under the cap`, { tids: [tid] });
+    cap = teamCap(tid, s);
   }
   return cap;
 }

@@ -81,6 +81,7 @@ while (guard++ < 200) {
   if (ph === 'PRESEASON' && steps.includes('tc') && !steps.includes('ps')) { steps.push('ps'); readAll('preseason'); run('autoCutdown', { tid: me() }); }
   if (ph === 'REGULAR_SEASON' && steps.includes('ps')) { readAll('new season'); break; }
   const r = run('sim', { target: ph === 'FREE_AGENCY' ? 'phase' : ph === 'DRAFT' ? 'phase' : 'week' });
-  if (r?.error) { console.log('SIM BLOCKED:', r.error); run('autoCutdown', { tid: me() }); }
+  if (r?.capBlock) { const cs = run('capSheet', { tid: me() }); const f = run('capFix', { tid: me(), week1: ph === 'PRESEASON' }); console.log('CAP BLOCK', (cs.cap.space / 1e6).toFixed(1), '-> staff fix', f.moves?.length, 'moves, space', (f.space / 1e6).toFixed(1), f.waiver ? 'WAIVER' : ''); if (!(f.space >= 0 || f.waiver)) { fails++; console.log('  !! cap fix failed'); } }
+  else if (r?.error) { console.log('SIM BLOCKED:', r.error); run('autoCutdown', { tid: me() }); }
 }
 console.log('steps', steps.join(','), 'fails', fails, 'season', G.L.meta.season, G.L.meta.phase);

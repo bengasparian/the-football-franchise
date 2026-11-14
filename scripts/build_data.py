@@ -310,7 +310,7 @@ for _, c in con.iterrows():
     hist = list(c.contract_history) if c.contract_history is not None else []
     active = [h for h in hist if h.get("status") == "Active"]
     ctype = active[-1]["contract_type"] if active else ("Drafted" if c.year_signed == c.draft_year else "Veteran")
-    years = []
+    rows = []
     for sh in (list(c.season_history) if c.season_history is not None else []):
         if not sh.get("year") or sh["year"] == "Total" or not str(sh["year"]).isdigit():
             continue
@@ -318,16 +318,33 @@ for _, c in con.iterrows():
         if y < SEASON:
             continue
         cap = sh.get("cap_number") or 0
-        if cap <= 0 and (sh.get("base_salary") or 0) <= 0:
-            continue
         prorate = (sh.get("prorated_bonus") or 0) + (sh.get("option_bonus") or 0)
-        base = cap - prorate
-        years.append([y, round(base * 1e6), round(prorate * 1e6), round((sh.get("guaranteed_salary") or 0) * 1e6)])
+        rows.append((y, cap, prorate, sh.get("cash_paid") or 0, sh.get("guaranteed_salary") or 0, sh.get("base_salary") or 0))
+    rows.sort()
+    # Void years: seasons tacked on to spread bonus money, in which the player is paid nothing and isn't under
+    # contract. The real deal ends at the last season with cash paid; the bonus money parked in the void years
+    # hits the team's cap as dead money when the deal expires ("vd").
+    paid = [r[0] for r in rows if r[3] > 0]
+    last_real = max(paid) if paid else None
+    years, vd = [], 0
+    void = [r for r in rows if last_real is not None and r[0] > last_real]
+    # OTC shows the whole void-year charge in the first void season when it has already accelerated it
+    if len(void) >= 2 and void[0][1] > 0 and all(r[1] <= 0 for r in void[1:]): vd = void[0][1]
+    else: vd = sum(r[2] for r in void)
+    for (y, cap, prorate, cash, gs, bs) in rows:
+        if last_real is not None and y > last_real:
+            continue
+        if cap <= 0 and bs <= 0:
+            continue
+        base = max(0.0, cap - prorate)
+        years.append([y, round(base * 1e6), round(prorate * 1e6), round(gs * 1e6)])
     if not years:
         continue
     CON[c.gsis_id] = {"signed": int(c.year_signed), "type": ctype, "apy": round(float(c.apy) * 1e6),
                       "tot": round(float(c.value) * 1e6), "gtd": round(float(c.guaranteed or 0) * 1e6),
                       "pct": float(c.apy_cap_pct or 0), "years": years}
+    if vd > 0.05:
+        CON[c.gsis_id]["vd"] = round(vd * 1e6)
 
 # ---------------------------------------------------------------- draft / accolades / combine
 dr = D["draft"]
@@ -954,12 +971,63 @@ for tm, c in HC.items():
     r = coach_rec.get(c, {"w": 0, "l": 0, "t": 0, "pw": 0, "pl": 0, "sb": 0, "seasons": set()})
     COACHES[tm] = {"name": NAME_FIX.get(c, c), "w": r["w"], "l": r["l"], "t": r["t"], "pw": r["pw"], "pl": r["pl"], "sb": r["sb"], "yrs": len(r["seasons"])}
 
+# ---------------------------------------------------------------- real team salary-cap picture
+# Over The Cap's team table: this season's real cap space and dead money, and next season's commitments, dead
+# money and projected cap. Player contracts alone can't reproduce these (dead money from released players and
+# carryover from last year aren't in the contract data), so the game starts every team from the real numbers.
+# A saved snapshot is the fallback when the live page can't be read.
+def _money(x):
+    x = _re.sub(r"<[^>]+>", "", x).strip()
+    neg = x.startswith("-") or x.startswith("(")
+    d = _re.sub(r"[^0-9]", "", x)
+    return (-int(d) if neg else int(d)) if d else None
+def _otc_tables(html):
+    nick = {t["name"].lower(): t["abbr"] for t in TEAMS}
+    out = {}
+    parts = _re.split(r"Base Salary Cap:\s*\$?([0-9,]+)", html)
+    for i in range(1, len(parts) - 1, 2):
+        base = int(parts[i].replace(",", ""))
+        rows = {}
+        for tr in _re.findall(r"<tr[^>]*>(.*?)</tr>", parts[i + 1], _re.S | _re.I):
+            cells = _re.findall(r"<td[^>]*>(.*?)</td>", tr, _re.S | _re.I)
+            if len(cells) < 6: continue
+            ab = nick.get(_re.sub(r"<[^>]+>", "", cells[0]).strip().lower())
+            sp, act, dead = _money(cells[1]), _money(cells[4]), _money(cells[5])
+            if ab and sp is not None and act and dead is not None and ab not in rows: rows[ab] = [sp, act, dead]
+        if len(rows) == 32 and all(80e6 < v[1] < 520e6 for v in rows.values()) and base not in out: out[base] = rows
+    return out
+CAPSNAP = None
+try:
+    req = urllib.request.Request("https://overthecap.com/salary-cap-space", headers={"User-Agent": "Mozilla/5.0 the-football-franchise-data"})
+    with urllib.request.urlopen(req, timeout=40) as r:
+        tb = _otc_tables(r.read().decode("utf-8", "ignore"))
+    bases = sorted(tb)
+    if 301_200_000 in tb and len(bases) >= 2 and bases[0] == 301_200_000:
+        CAPSNAP = {"asOf": datetime.date.today().isoformat(), "src": "live", "base": {str(SEASON): bases[0], str(SEASON + 1): bases[1]}, str(SEASON): tb[bases[0]], str(SEASON + 1): tb[bases[1]]}
+    print("otc cap table: parsed", {b: len(v) for b, v in tb.items()}, "-> live" if CAPSNAP else "-> not usable", flush=True)
+except Exception as e:
+    print("otc cap table unavailable:", e, flush=True)
+if CAPSNAP is None:
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cap_snapshot.json")) as f:
+            CAPSNAP = json.load(f); CAPSNAP["src"] = "snapshot"
+        print("cap table: using snapshot from", CAPSNAP.get("asOf"), flush=True)
+    except Exception as e:
+        print("cap snapshot unavailable:", e, flush=True)
+CAPOUT = None
+if CAPSNAP and str(SEASON) in CAPSNAP:
+    a, b = CAPSNAP[str(SEASON)], CAPSNAP.get(str(SEASON + 1), {})
+    CAPOUT = {"asOf": CAPSNAP.get("asOf"), "src": CAPSNAP.get("src"), "nextCap": CAPSNAP["base"].get(str(SEASON + 1)),
+              "teams": {ab: {"space": v[0], "active": v[1], "dead": v[2], **({"space2": b[ab][0], "active2": b[ab][1], "dead2": b[ab][2]} if ab in b else {})} for ab, v in a.items()}}
+    print("cap table", CAPOUT["src"], CAPOUT["asOf"], "next cap", CAPOUT["nextCap"], "PIT", CAPOUT["teams"].get("PIT"), flush=True)
+
 out = {
     "meta": {"season": SEASON, "built": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
              "rosterWeek": last_week, "lastFullWeek": last_full_week, "gamesPlayed": len(completed),
              "cap": 301_200_000, "source": "nflverse (rosters, Over The Cap contracts, PFR & NFL stats)"},
     "teams": TEAMS, "players": out_players, "games": GAMES, "coaches": COACHES,
 }
+if CAPOUT: out["cap"] = CAPOUT
 os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)
 with open(OUT, "w") as f:
     json.dump(out, f, separators=(",", ":"))

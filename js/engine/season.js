@@ -1,10 +1,10 @@
 // Season orchestration: weekly sims, playoffs, and the offseason calendar.
-import { G, rnd, gauss, clamp, age, news, transaction, capFor, isUser, shuffle, nextId, pick } from './core.js';
+import { G, rnd, gauss, clamp, age, news, transaction, capFor, isUser, shuffle, nextId, pick, fmtMoney } from './core.js';
 import { simGame } from './sim.js';
 import { applyGameInjuries, weeklyInjuryUpdate } from './injuries.js';
 import { updateInSeasonRatings, offseasonProgression, setOvr, refreshTeamRef } from './ratings.js';
 import { updateMorale, checkUnrest } from './personality.js';
-import { marketValue, teamCap, releasePlayer, capSeason, playerAsk, signContract } from './contracts.js';
+import { marketValue, teamCap, releasePlayer, capSeason, playerAsk, signContract, chargeVoidMoney, setCapAll } from './contracts.js';
 const playerAskSafe = (p) => { try { return playerAsk(p, p.tid); } catch { return null; } };
 const signContractSafe = (p, ask) => signContract(p.pid, p.tid, { years: Math.max(3, ask.years), apy: ask.apy, gtd: Math.round(ask.apy * Math.max(3, ask.years) * ask.gtdPct) }, { type: 'extend' });
 import { computeStandings, playoffSeeds, divisionOrder } from './standings.js';
@@ -123,6 +123,41 @@ export function simWeek() {
   return { ok: true, played: games.length };
 }
 
+// Your staff gets the team under the cap the way real front offices do: restructures first, then releases.
+// Returns what was done (also posted to your news).
+export function staffCapFix(tid) {
+  const Lg = G.L;
+  const t = Lg.teams[tid];
+  const before = teamCap(tid).space;
+  if (before >= 0) return { ok: true, moves: [], space: before };
+  const mark = Lg.transactions[0]?.id; // the log is newest-first
+  aiCapCompliance(tid);
+  const moves = [];
+  for (const x of Lg.transactions) { if (x.id === mark) break; if ((x.tids || []).includes(tid)) moves.unshift(x.text); }
+  const after = teamCap(tid).space;
+  if (moves.length) news(`Cap moves: your staff made ${moves.length} move${moves.length > 1 ? 's' : ''} to get the ${t.name} ${after >= 0 ? 'under the cap' : 'closer to the cap'}. ${moves.slice(0, 6).join('. ')}${moves.length > 6 ? ` (and ${moves.length - 6} more)` : ''}.`, { type: 'system', tids: [tid], user: true });
+  autoDepth(tid, { keepUserOrder: true });
+  // Nothing left to restructure, release or defer: don't trap the GM. He can keep going, but can't add salary
+  // until the team is back under.
+  if (after < 0) {
+    t.capWaiver = teamCap(tid).season;
+    news(`Your staff has made every move available and the ${t.name} are still ${fmtMoney(-after)} over the cap. The league office is letting you continue this year, but you won't be able to add salary until you're back under.`, { type: 'system', tids: [tid], user: true });
+  }
+  return { ok: true, moves, space: after, before, waiver: after < 0 };
+}
+// NFL rule: a team can't start the league year or the regular season over the cap. In hands-off sims your staff
+// fixes it; otherwise you're asked to (the Cap page has a one-click staff fix).
+function userCapGate(when) {
+  const Lg = G.L;
+  for (const ut of Lg.meta.userTids) {
+    const c = teamCap(ut);
+    if (c.space >= 0 || Lg.teams[ut].capWaiver === c.season) continue;
+    if (Lg.settings.autoUser.roster || G.multiSim) { staffCapFix(ut); continue; }
+    return { error: `${Lg.teams[ut].abbr} is ${fmtMoney(-c.space)} over the ${c.season} salary cap. Teams must be under the cap ${when}. Restructure contracts or release players on the Salary Cap page (or use "Have my staff fix it" there).`, capBlock: true };
+  }
+  return null;
+}
+
 export function userBlocker(tid) {
   const Lg = G.L;
   const c = rosterCounts(tid);
@@ -235,14 +270,21 @@ function simPreseasonWeek() {
   return { ok: true };
 }
 function finishPreseason() {
+  setCapAll(true); // from here on every contract counts, like Week 1
+  try { return finishPreseason2(); } finally { setCapAll(false); }
+}
+function finishPreseason2() {
   const Lg = G.L;
   const m = Lg.meta;
   for (const ut of m.userTids) {
     const c = rosterCounts(ut);
-    if (c.ACT > Lg.rules.activeMax && !Lg.settings.autoUser.roster) {
+    if (c.ACT > Lg.rules.activeMax && !Lg.settings.autoUser.roster && !G.multiSim) {
       return { error: `Roster cutdown: ${Lg.teams[ut].abbr} must get down to ${Lg.rules.activeMax} active players (currently ${c.ACT}). Use Roster > Auto cutdown or release players.` };
     }
   }
+  // the offseason top-51 rule ends now: the whole 53, injured reserve and the practice squad all count
+  const gate = userCapGate('for Week 1, when every contract counts (the 53-man roster, injured reserve and the practice squad), not just the top 51');
+  if (gate) return gate;
   for (const t of Lg.teams) {
     if (!isUser(t.tid) || Lg.settings.autoUser.roster) { aiCutdown(t.tid); aiCapCompliance(t.tid); fillToMax(t.tid, Lg.rules.activeMax); aiCapCompliance(t.tid); }
     else {
@@ -251,7 +293,15 @@ function finishPreseason() {
       if (before < Lg.rules.activeMax) { fillToMax(t.tid, Lg.rules.activeMax); const added = rosterCounts(t.tid).ACT - before; if (added > 0) news(`Your roster had open spots, so ${added} free agent${added > 1 ? 's were' : ' was'} signed to minimum deals to reach ${Lg.rules.activeMax}.`, { type: 'system', tids: [t.tid], user: true }); }
     }
     aiWeekly(t.tid);
-    if (!isUser(t.tid) || Lg.settings.autoUser.roster) fillToMax(t.tid, Lg.rules.activeMax);
+    if (!isUser(t.tid) || Lg.settings.autoUser.roster) {
+      // fill to 53, then get under: restructures first; if that isn't enough, swap pricier players for minimum deals
+      for (let i = 0; i < 3; i++) {
+        fillToMax(t.tid, Lg.rules.activeMax);
+        if (aiCapCompliance(t.tid, undefined, { noCuts: true }).space >= 0) break;
+        aiCapCompliance(t.tid);
+      }
+      fillToMax(t.tid, Lg.rules.activeMax);
+    }
   }
   // remove preseason games' boxes to save space
   for (const g of Lg.games) if (g.type === 'PRE' && g.s === m.season && g.box) g.box = { scoring: g.box.scoring, tm: g.box.tm };
@@ -408,13 +458,18 @@ function enterFreeAgency() {
   for (const p of Object.values(Lg.players)) {
     if (p.tid >= 0 && p.contract && p.contract.exp < m.season) {
       const t = Lg.teams[p.tid];
+      chargeVoidMoney(p, m.season);
       for (const k in t.depth) t.depth[k] = t.depth[k].filter((x) => x !== p.pid);
       p.lastTeam = p.tid; p.tid = -1; p.status = 'FA'; p.contract = null; p.holdout = false; n++;
     }
   }
   for (const p of Object.values(Lg.players)) if (p.status === 'IR' && p.tid >= 0) { p.status = 'ACT'; if (p.inj && !p.inj.se) p.inj = null; }
   for (const p of Object.values(Lg.players)) if (p.inj?.se) { p.inj.wk = Math.max(0, p.inj.wk - 30); p.inj.se = false; if (p.inj.wk <= 0) p.inj = null; }
-  for (const t of Lg.teams) { t.tagUsed = null; t.depthLocked = false; aiCapCompliance(t.tid); }
+  for (const t of Lg.teams) {
+    t.tagUsed = null; t.depthLocked = false;
+    if (!isUser(t.tid)) aiCapCompliance(t.tid);
+    else if (teamCap(t.tid).space < 0 && (Lg.settings.autoUser.roster || G.multiSim)) staffCapFix(t.tid); // void-year money that just came due
+  }
   addSeasonPicks(m.season + 3);
   pruneLeague();
   // schedule for the new season (division placings from last season)
@@ -512,7 +567,7 @@ export function advance(opts = {}) {
     case 'FANTASY_DRAFT': return { error: 'Finish the fantasy draft first.' };
     case 'PRESEASON': case 'REGULAR_SEASON': case 'PLAYOFFS': return simWeek();
     case 'SEASON_END': enterResign(); return { ok: true };
-    case 'RESIGN': enterFreeAgency(); return { ok: true };
+    case 'RESIGN': { const gate = userCapGate('when the new league year begins'); if (gate) return gate; enterFreeAgency(); return { ok: true }; }
     case 'FREE_AGENCY':
       if (opts.day && Lg.fa.day < Lg.fa.maxDay) { faDay(); aiTradeRound(0.25, 2); return { ok: true, day: Lg.fa.day }; }
       while (Lg.fa.day < Lg.fa.maxDay) { faDay(); aiTradeRound(0.25, 2); }
