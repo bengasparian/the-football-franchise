@@ -495,7 +495,7 @@ export function contractPreview(pid, tid, offer, opts = {}) {
   const rows = seasons.map((s, i) => {
     const y = c.years.find((x) => x.s === s);
     return { s, cap: after[i].cap, oldHit: oldHits[i], newHit: newHits[i], base: y?.base || 0, bonus: y?.bonus || 0, gtd: y?.gtd || 0,
-      before: before[i].space, after: after[i].space, projected: s > Lg.meta.season };
+      before: before[i].space, after: after[i].space, projected: s > s0 };
   });
   // dead money if he's released before the second season of the deal
   const s1 = c.years.find((y) => y.s > s0)?.s;
