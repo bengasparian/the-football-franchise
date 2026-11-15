@@ -61,8 +61,11 @@ export function makeContract({ start, years, apy, gtd = 0, sbPct = null, rookie 
   const proYears = Math.min(years, 5);
   const pro = sb / proYears;
   const restBase = total - sb;
+  // Real veteran deals are back-loaded: a small first-year salary (the bonus carries year one), then raises.
+  // Rookie, minimum and tag deals keep their own flat structure.
+  const back = years >= 2 && !rookie && !min;
   const w = [];
-  for (let i = 0; i < years; i++) w.push(1 + i * 0.06);
+  for (let i = 0; i < years; i++) w.push(back ? (i === 0 ? (years === 2 ? 0.75 : 0.5) : 1 + (i - 1) * 0.1) : 1 + i * 0.06);
   const wsum = w.reduce((a, b) => a + b, 0);
   let gLeft = Math.max(0, gtd - sb);
   const yrs = [];
@@ -121,7 +124,7 @@ export function teamCap(tid, s = capSeason()) {
   const voidDue = ps.reduce((a, p) => a + (p.contract?.vd && !p.contract.ps && p.contract.exp < s ? p.contract.vd : 0), 0);
   const dead = (t.dead || []).filter((d) => d.s === s).reduce((a, d) => a + d.amt, 0) + voidDue;
   let roll = t.rollover?.[s] || 0;
-  if (future && s === Lg.meta.season + 1 && t.rollover?.[s] == null) roll = Math.max(0, Math.min(45e6, teamCap(tid, Lg.meta.season).space));
+  if (future && s === Lg.meta.season + 1 && t.rollover?.[s] == null) roll = Math.max(0, teamCap(tid, Lg.meta.season).space);
   // real-life commitments the contract data doesn't carry (see league creation)
   const adj = t.capAdj?.[s] || 0;
   const cap = capFor(s) + roll + adj;
@@ -458,11 +461,19 @@ export function buildContract(p, tid, offer, { start = null, type = 'sign' } = {
     // signing bonus of the extension prorates across remaining + new years (max 5)
     const keep = p.contract.years.filter((y) => y.s >= capSeason()).map((y) => ({ ...y }));
     const allYears = [...keep, ...newC.years];
-    const sb = newC.years.reduce((a, y) => a + y.bonus, 0);
+    let sb = newC.years.reduce((a, y) => a + y.bonus, 0);
     newC.years.forEach((y) => { y.bonus = 0; });
+    // Like real extensions, this year's salary (above the minimum) is turned into signing bonus and spread out with
+    // the new money, so an extension lowers his cap hit now instead of raising it.
+    let converted = 0;
+    if (keep[0] && !p.contract.rookie && !p.contract.tag) {
+      converted = Math.max(0, keep[0].base - minSalary(p.exp ?? 0, keep[0].s));
+      keep[0].base -= converted; keep[0].gtd = Math.max(0, keep[0].gtd - converted);
+      sb += converted;
+    }
     const n = Math.min(5, allYears.length);
     allYears.slice(0, n).forEach((y) => { y.bonus += Math.round(sb / n); });
-    c = { ...newC, years: allYears, exp: allYears[allYears.length - 1].s, signed: Lg.meta.season, extendedFrom: p.contract.apy, sb };
+    c = { ...newC, years: allYears, exp: allYears[allYears.length - 1].s, signed: Lg.meta.season, extendedFrom: p.contract.apy, sb, converted };
     spreadVoid(c, p.contract.vd, newC.years);
   } else {
     c = makeContract({ start: s, years: offer.years, apy: offer.apy, gtd: offer.gtd });
@@ -500,7 +511,7 @@ export function contractPreview(pid, tid, offer, opts = {}) {
   // dead money if he's released before the second season of the deal
   const s1 = c.years.find((y) => y.s > s0)?.s;
   const deadNext = s1 ? c.years.filter((y) => y.s >= s1).reduce((a, y) => a + y.bonus + y.gtd, 0) : 0;
-  return { rows, contract: { years: c.years.length, newYears: adj.years, apy: adj.apy, gtd: adj.gtd, sb: c.sb || 0, voidCarried: c.voidCarried || 0, exp: c.exp, start: c.years[0]?.s },
+  return { rows, contract: { years: c.years.length, newYears: adj.years, apy: adj.apy, gtd: adj.gtd, sb: c.sb || 0, converted: c.converted || 0, voidCarried: c.voidCarried || 0, exp: c.exp, start: c.years[0]?.s },
     adjusted: adj.apy !== offer.apy || adj.years !== offer.years, offer: adj, oldVoid, deadNext, s1 };
 }
 
@@ -511,7 +522,7 @@ export function signContract(pid, tid, offer, { start = null, type = 'sign' } = 
   const s = start ?? capSeason();
   const built = buildContract(p, tid, offer, { start, type });
   const c = built.c; offer = built.offer;
-  delete c.sb;
+  delete c.sb; delete c.converted;
   const wasTeam = p.tid;
   if (p.tid !== tid) { removeFromDepth(p); p.yrsWithTeam = 0; }
   p.tid = tid; p.status = p.status === 'IR' ? 'IR' : 'ACT'; p.contract = c; p.holdout = false; p.waiver = null;
@@ -523,11 +534,15 @@ export function signContract(pid, tid, offer, { start = null, type = 'sign' } = 
   return { ok: true, contract: c };
 }
 
-// old void-year bonus money keeps prorating over the first years of the new deal (up to 4)
+// Like the real thing, the old void-year proration keeps its schedule (4 more years): the years the new deal covers
+// carry their share, and any share beyond the new deal stays parked in void years.
 function spreadVoid(c, vd, years) {
   if (!vd || !years.length) return;
+  const per = Math.round(vd / 4);
   const n = Math.min(4, years.length);
-  years.slice(0, n).forEach((y) => { y.bonus += Math.round(vd / n); });
+  years.slice(0, n).forEach((y) => { y.bonus += per; });
+  const left = Math.max(0, vd - per * n);
+  if (left > 0) c.vd = (c.vd || 0) + left;
   c.voidCarried = vd;
 }
 // when a deal runs out, bonus money parked in its void years hits the team's cap for the new league year

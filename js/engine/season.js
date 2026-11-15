@@ -132,6 +132,15 @@ export function staffCapFix(tid) {
   if (before >= 0) return { ok: true, moves: [], space: before };
   const mark = Lg.transactions[0]?.id; // the log is newest-first
   aiCapCompliance(tid);
+  if (Lg.meta.phase === 'PRESEASON') {
+    // Week 1: keep a full 53. Releases get replaced with minimum deals; restructures cover the rest
+    for (let i = 0; i < 3; i++) {
+      fillToMax(tid, Lg.rules.activeMax, { force: true });
+      if (aiCapCompliance(tid, undefined, { noCuts: true }).space >= 0) break;
+      aiCapCompliance(tid);
+    }
+    fillToMax(tid, Lg.rules.activeMax);
+  }
   const moves = [];
   for (const x of Lg.transactions) { if (x.id === mark) break; if ((x.tids || []).includes(tid)) moves.unshift(x.text); }
   const after = teamCap(tid).space;
@@ -282,6 +291,13 @@ function finishPreseason2() {
       return { error: `Roster cutdown: ${Lg.teams[ut].abbr} must get down to ${Lg.rules.activeMax} active players (currently ${c.ACT}). Use Roster > Auto cutdown or release players.` };
     }
   }
+  // every team opens the season with a full 53: fill open spots with minimum deals first, so the Week 1 cap check
+  // covers the real roster
+  for (const ut of m.userTids) {
+    if (Lg.settings.autoUser.roster || G.multiSim) continue;
+    const before = rosterCounts(ut).ACT;
+    if (before < Lg.rules.activeMax) { fillToMax(ut, Lg.rules.activeMax, { force: true }); const added = rosterCounts(ut).ACT - before; if (added > 0) news(`Your roster had open spots, so ${added} free agent${added > 1 ? 's were' : ' was'} signed to minimum deals to reach ${Lg.rules.activeMax}.`, { type: 'system', tids: [ut], user: true }); }
+  }
   // the offseason top-51 rule ends now: the whole 53, injured reserve and the practice squad all count
   const gate = userCapGate('for Week 1, when every contract counts (the 53-man roster, injured reserve and the practice squad), not just the top 51');
   if (gate) return gate;
@@ -398,7 +414,7 @@ function enterSeasonEnd() {
   const Lg = G.L;
   const m = Lg.meta;
   // unused cap rolls into next year (computed on the season that just ended, before the league year turns)
-  for (const t of Lg.teams) { const c = teamCap(t.tid, m.season); t.rollover[m.season + 1] = Math.max(0, Math.min(c.space, 45e6)); }
+  for (const t of Lg.teams) { const c = teamCap(t.tid, m.season); t.rollover[m.season + 1] = Math.max(0, c.space); } // all unused room carries over (teams declare it in real life)
   m.phase = 'SEASON_END';
   const st = Lg.standingsCache || computeStandings();
   closeSeasonFinances();
@@ -441,7 +457,7 @@ function enterFreeAgency() {
   const m = Lg.meta;
   const old = m.season;
   // rollover unused cap
-  for (const t of Lg.teams) if (t.rollover[old + 1] == null) { const c = teamCap(t.tid, old); t.rollover[old + 1] = Math.max(0, Math.min(c.space, 45e6)); }
+  for (const t of Lg.teams) if (t.rollover[old + 1] == null) { const c = teamCap(t.tid, old); t.rollover[old + 1] = Math.max(0, c.space); }
   m.season = old + 1;
   capFor(m.season);
   m.phase = 'FREE_AGENCY'; m.week = 0;
@@ -602,7 +618,7 @@ export function simUntil(target) {
   let res = { ok: true };
   const startPhase = Lg.meta.phase;
   do {
-    res = advance({ all: target === 'nextSeason' || target === 'seasonEnd' });
+    res = advance({ all: target === 'nextSeason' || target === 'seasonEnd' || (target === 'phase' && startPhase === 'DRAFT') }); // "Finish Draft" picks for you
     if (res.error) return res;
     if (target === 'phase' && Lg.meta.phase !== startPhase) break;
     if (res.onClock && target !== 'nextSeason') break;

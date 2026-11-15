@@ -248,7 +248,7 @@ export function aiExtensions(tid) {
 void marketValue; void news; void capHit;
 
 // sign the best cheap free agents at the thinnest positions (teams carry full rosters)
-export function fillToMax(tid, target) {
+export function fillToMax(tid, target, { force = false } = {}) {
   const Lg = G.L;
   const cs = capSeason();
   const mine = Object.values(Lg.players).filter((p) => p.tid === tid);
@@ -263,7 +263,7 @@ export function fillToMax(tid, target) {
     if (psGuy) { psGuy.status = 'ACT'; psGuy.contract = minDeal(psGuy, cs); act++; continue; }
     const fa = freeAgents().filter((p) => p.pos === pos).sort((a, b) => b.r.ovr - a.r.ovr)[0];
     // a legal 53 comes first; cap issues get fixed with cuts/restructures afterward
-    if (!fa || (teamCap(tid, cs).space < minSalary(fa.exp ?? 0, cs) && act >= target - 4)) break;
+    if (!fa || (!force && teamCap(tid, cs).space < minSalary(fa.exp ?? 0, cs) && act >= target - 4)) break;
     fa.tid = tid; fa.status = 'ACT'; fa.contract = minDeal(fa, cs); fa.yrsWithTeam = 0; mine.push(fa); act++;
     transaction('sign', `${Lg.teams[tid].abbr} signed ${fa.pos} ${fa.fn} ${fa.ln} (1 yr, min)`, { tids: [tid], pids: [fa.pid] });
   }

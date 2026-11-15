@@ -211,6 +211,7 @@ PAGES2.cap = async ([tidS]) => {
   <div class="grid g4"><div class="stat"><div class="l">Team cap</div><div class="v">${money(k.cap)}</div></div><div class="stat"><div class="l">Committed</div><div class="v">${money(k.used)}</div></div><div class="stat"><div class="l">Dead money</div><div class="v bad">${money(k.dead)}</div></div><div class="stat"><div class="l">Cap space</div><div class="v ${over ? 'bad' : 'good'}">${money(k.space)}</div></div></div>
   <div class="grid g2" style="margin-top:16px">${breakdown}<div class="card"><h2>Dead money</h2><div class="scroll" style="max-height:240px">${deadRows.map((d) => `<div class="small row" style="justify-content:space-between;gap:8px${d.pending ? ';opacity:.8' : ''}"><span>${d.s} ${esc(d.name)}</span><b class="bad">${money(d.amt)}</b></div>`).join('') || '<div class="muted small">None</div>'}</div>
     <div class="tiny muted" style="margin-top:6px">Void years: bonus money spread into seasons after a contract ends. It comes due as dead money the year after the deal runs out, unless you re-sign or extend the player first (then it keeps spreading).</div></div></div>
+  ${c.mine ? spaceCard(c) : ''}
   <div class="grid g21" style="margin-top:16px"><div class="card"><h2>Future commitments</h2>${bars(items)}<div class="small muted">Projected caps: ${yrs.map((y) => `${y} ${money(c.caps[y])}`).join(' · ')}. Cap growth is about 6–9% a year.</div></div>
   <div class="card"><h3>${c.season} tag values</h3><div class="small">${['QB', 'RB', 'WR', 'TE', 'OT', 'EDGE', 'DT', 'LB', 'CB', 'S', 'K'].map((p) => `${p} ${money(c.tags[p]?.F || 0)}`).join(' · ')}</div></div></div>
   ${table({ id: 'cap', sort: { k: 'hit', dir: 'desc' }, rows: c.players, cols: [
@@ -220,6 +221,17 @@ PAGES2.cap = async ([tidS]) => {
   ] })}`;
 };
 
+// Ways to make room without cutting anyone: restructures (the way real teams create space every March)
+function spaceCard(c) {
+  const rs = c.players.filter((p) => p.rs > 1e6).sort((a, b) => b.rs - a.rs);
+  const total = rs.reduce((a, p) => a + p.rs, 0);
+  if (!rs.length) return '';
+  return `<div class="card" style="margin-top:16px"><div class="card-h"><h2>Create cap space</h2><span class="small muted">Up to <b class="good">${money(total)}</b> available from restructures</span></div>
+    <div class="small muted" style="margin-bottom:8px">A restructure turns a player's ${c.season} salary into a signing bonus spread over the next 5 years. You clear room now and pay it later (in void years if his deal is shorter). This is how real teams get under the cap to re-sign their players. No one is released.</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">${[10, 25, 50].filter((n) => n * 1e6 <= total + 5e6).map((n) => `<button class="btn sm" data-act="capRestr" data-need="${n * 1e6}">Clear ${money(n * 1e6)}</button>`).join('')}<button class="btn sm pri" data-act="capRestr" data-need="${Math.round(total)}" title="Restructure every eligible contract">Clear the most (${money(total)})</button></div>
+    <div class="grid g3">${rs.slice(0, 9).map((p) => `<div class="mini-row"><span>${esc(p.name)} <span class="tiny muted">${esc(p.pos)}</span></span><span class="r"><span class="good small">+${money(p.rs)}</span>${p.rsVoid ? ` <span class="tiny muted" title="His deal ends before the 5-year spread does, so this much becomes dead money the year after his contract ends (unless you re-sign him)">${money(p.rsVoid)} void</span>` : ''} <button class="btn sm" data-act="restructure" data-pid="${esc(p.pid)}">Restructure</button></span></div>`).join('')}</div></div>`;
+}
+ACTIONS.capRestr = async (el) => { const r = await act('capRestructure', { tid: session.tid, need: +el.dataset.need }, { refresh: true }); if (r?.ok) toast(esc(r.moves.length ? `Restructured ${r.moves.length} contract${r.moves.length > 1 ? 's' : ''}, clearing ${money(r.cleared)}: ${r.moves.join(', ')}.` : 'Nothing left to restructure.'), r.moves.length ? 'good' : 'warn', 8000); };
 ACTIONS.capFix = async (el) => { if (!confirm('Let your staff get you under the cap? They restructure contracts first (pushing money into future years), then release players if that is not enough.')) return; const r = await act('capFix', { tid: session.tid, week1: !!el.dataset.w1 }, { refresh: true }); if (r?.moves) toast(esc(r.moves.length ? `${r.moves.length} move${r.moves.length > 1 ? 's' : ''} made. Cap space is now ${money(r.space)}. Details are in your news.` : 'No moves were needed.'), r.space >= 0 ? 'good' : 'warn', 7000); };
 
 // ===================================================================== STAFF

@@ -518,7 +518,7 @@ export function capSheet({ tid }, ctx) {
   const Lg = L();
   tid = tid ?? ctx.tid;
   const s = capSeason();
-  const ps = Object.values(Lg.players).filter((p) => p.tid === tid).map((p) => ({ ...pRow(p), years: (p.contract?.years || []).filter((y) => y.s >= s).map((y) => ({ s: y.s, hit: y.base + y.bonus, gtd: y.gtd })), dead: p.contract ? deadMoneyIfCut(p) : null }));
+  const ps = Object.values(Lg.players).filter((p) => p.tid === tid).map((p) => ({ ...pRow(p), years: (p.contract?.years || []).filter((y) => y.s >= s).map((y) => ({ s: y.s, hit: y.base + y.bonus, gtd: y.gtd })), dead: p.contract ? deadMoneyIfCut(p) : null, ...(() => { const r = p.contract && !p.contract.ps ? restructurePreview(p) : null; return { rs: r?.saves || 0, rsVoid: r?.voidMoney || 0 }; })() }));
   ps.sort((a, b) => (b.contract?.hit || 0) - (a.contract?.hit || 0));
   const t = T(tid);
   const cap = teamCap(tid);
@@ -540,6 +540,24 @@ export function capSheet({ tid }, ctx) {
     real: Lg.meta.capSrc || null };
 }
 // "Have my staff fix it": restructures first, then releases, until the team is under the cap
+// Restructure the biggest contracts until there's the room you asked for (no releases)
+export function capRestructure({ tid, need }, ctx) {
+  requireOwn(ctx, tid);
+  const Lg = L();
+  const start = teamCap(tid).space;
+  const target = start + Math.max(0, need || 0);
+  const done = [];
+  for (let i = 0; i < 12; i++) {
+    if (teamCap(tid).space >= target) break;
+    const best = Object.values(Lg.players).filter((p) => p.tid === tid && p.contract && !p.contract.ps).map((p) => ({ p, pr: restructurePreview(p) }))
+      .filter((x) => x.pr && x.pr.saves > 1e6).sort((a, b) => (b.pr.saves - b.pr.voidMoney * 0.5) - (a.pr.saves - a.pr.voidMoney * 0.5))[0];
+    if (!best) break;
+    restructure(best.p.pid);
+    done.push(`${best.p.fn} ${best.p.ln} (${fmtMoney(best.pr.saves)})`);
+  }
+  const end = teamCap(tid).space;
+  return { ok: true, moves: done, cleared: end - start, space: end };
+}
 export function capFix({ tid, week1 }, ctx) {
   requireOwn(ctx, tid);
   if (!week1) return staffCapFix(tid);
@@ -625,7 +643,10 @@ export function negotiateP({ pid, offer, mode }, ctx) {
   const opts = negOpts(p, mode);
   // check the cap before talking: the deal has to fit this league year
   const r0 = contractPreview(pid, tid, offer, opts).rows[0];
-  if (r0.after < 0 && r0.after < r0.before) return { error: `This deal doesn't fit under the ${r0.s} cap: his cap hit would be ${fmtMoney(r0.newHit)} and you'd be ${fmtMoney(-r0.after)} over. Lower the money or the guarantees, add years, or clear space first.` };
+  if (r0.after < 0 && r0.after < r0.before) {
+    const room = Object.values(Lg.players).filter((x) => x.tid === tid && x.pid !== pid && x.contract).map((x) => restructurePreview(x)?.saves || 0).reduce((a, b) => a + b, 0);
+    return { error: `This deal doesn't fit under the ${r0.s} cap yet: his cap hit would be ${fmtMoney(r0.newHit)} and you'd be ${fmtMoney(-r0.after)} over. ${room > -r0.after ? `Restructuring contracts can clear up to ${fmtMoney(room)} (Salary Cap page: "Create cap space"), then try again.` : 'Clear space first (restructure, release or trade), or lower the money.'}` };
+  }
   const res = negotiate(pid, tid, offer, {});
   if (res.status === 'refused' && Lg.meta.phase === 'RESIGN' && mode === 'resign') (p.grudge ||= {})[tid] = { s: Lg.meta.season, why: 'Contract talks broke down' };
   if (res.status === 'accepted') {
