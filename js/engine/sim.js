@@ -522,14 +522,16 @@ export function simGame(game, opts = {}) {
     let rusher = null;
     if (pressured) {
       const rushers = [...rushersFor(d, pk.passDown), ...d.LB.slice(0, 1)];
-      rusher = wpick(rushers, rushers.map((p) => Math.pow(Math.max(20, eff(p, 'prs')) / 70, 1.6) * (d.EDGE.includes(p) || p === d.RUSH ? 1.45 : d.DT.includes(p) ? 0.95 : 0.4)));
+      rusher = wpick(rushers, rushers.map((p) => Math.pow(Math.max(20, eff(p, 'prs')) / 70, 1.15) * (d.EDGE.includes(p) || p === d.RUSH ? 1.3 : d.DT.includes(p) ? 0.95 : 0.45)));
       inc(box, rusher, 'prss');
       const beaten = wpick(ol, ol.map((p) => Math.pow(Math.max(5, 105 - eff(p, 'pbk')) / 30, 2)));
       inc(box, beaten, 'prA');
       const sackP = clamp(0.205 + 0.03 * prDiff - (o.r.qbPoc - 75) / 330 - (o.r.qbMob - 72) / 500 + (o.so.sack || 0), 0.08, 0.4);
       if (chance(sackP)) {
         const yds = Math.round(clamp(gauss(7, 2.5), 1, 15));
-        inc(box, qb, 'sk'); inc(box, qb, 'skyd', yds); inc(box, rusher, 'sck'); inc(box, beaten, 'skA');
+        // a share of sacks are clean-up and coverage sacks credited to someone else (keeps leaders near real levels)
+        const sacker = chance(0.3) ? (pick([...rushersFor(d, pk.passDown), ...d.LB.slice(0, 3), ...d.S.slice(0, 2)].filter((x) => x && x !== rusher)) || rusher) : rusher;
+        inc(box, qb, 'sk'); inc(box, qb, 'skyd', yds); inc(box, sacker, 'sck'); inc(box, beaten, 'skA');
         tb(S.off).sk++; tb(S.off).skYd += yds;
         if (chance(0.11 * (sl.turnovers ?? 1))) {
           inc(box, qb, 'fum'); inc(box, rusher, 'ff');
@@ -568,7 +570,7 @@ export function simGame(game, opts = {}) {
     for (const [p, sh] of role) {
       if (!p || tgts.includes(p)) continue;
       tgts.push(p);
-      w.push(sh * (S.yl >= 80 && p === o.RZ ? 1.7 : 1) * Math.exp(clamp(((eff(p, 'rte') + eff(p, 'rel') + eff(p, 'cth')) / 3 - 74) / 30, -0.35, 0.4)));
+      w.push(sh * (S.yl >= 80 && p === o.RZ ? 1.7 : 1) * Math.exp(clamp(((eff(p, 'rte') + eff(p, 'rel') + eff(p, 'cth')) / 3 - 74) / 40, -0.3, 0.22)));
     }
     const tg = wpick(tgts, w);
     // depth of target

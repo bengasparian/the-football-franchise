@@ -82,7 +82,11 @@ export async function render() {
   const [route, ...params] = hash.split('/').map(decodeURIComponent);
   const prevRoute = APP.route;
   APP.route = route || ''; APP.params = params;
-  if (prevRoute !== APP.route) drawNav(); // highlight the tab instantly
+  if (prevRoute !== APP.route) {
+    drawNav(); // highlight the tab instantly
+    // leaving a page closes its pop-up (a box score opened from #/game comes back here, so keep that one)
+    if (prevRoute !== 'game' && APP.route !== 'game' && $('#modal')?.classList.contains('open')) closeModal();
+  }
   const h = await refreshHeader();
   const app = $('#app');
   if (APP.route === 'tutorial') { location.hash = '#/home'; setTimeout(startTour, 400); return; }
@@ -171,7 +175,7 @@ function drawTop() {
 const SECTIONS = [
   { id: 'home', label: 'Hub', pages: [['home', 'Franchise Hub']] },
   { id: 'team', label: 'My Team', pages: [['roster', 'Roster'], ['depth', 'Depth Chart'], ['lineup', 'Adjust Lineup'], ['prep', 'Week Prep'], ['stories', 'Storylines'], ['schedule', 'Schedule'], ['cap', 'Salary Cap & Contracts'], ['staff', 'Coaching Staff'], ['owner', 'Owner & Finances']] },
-  { id: 'moves', label: 'Transactions', pages: [['trade', 'Trade Center'], ['finder', 'Trade Finder'], ['offers', 'Trade Offers'], ['fa', 'Free Agency'], ['draft', 'Draft & Scouting'], ['fantasy', 'Fantasy Draft']] },
+  { id: 'moves', label: 'Transactions', short: 'Moves', pages: [['trade', 'Trade Center'], ['finder', 'Trade Finder'], ['offers', 'Trade Offers'], ['fa', 'Free Agency'], ['draft', 'Draft & Scouting'], ['fantasy', 'Fantasy Draft']] },
   { id: 'league', label: 'League', pages: [['standings', 'Standings & Playoffs'], ['recap', 'Weekly Recap'], ['awards', 'Awards Race'], ['stats', 'Stats & Leaders'], ['teams', 'Teams'], ['news', 'News'], ['rules', 'League Meeting'], ['history', 'NFL History']] },
   { id: 'office', label: 'Office', pages: [['franchise', 'Relocate & Rebrand'], ['settings', 'Settings & Sliders'], ['online', 'Play Online'], ['start', 'Saves / New League'], ['tutorial', 'Tutorial']] },
 ];
@@ -190,10 +194,10 @@ function drawNav() {
     return '';
   };
   const sec = SECTIONS.find((x) => x.id === cur);
-  nav.innerHTML = `<div class="sections">${SECTIONS.map((x) => `<a class="sec ${x.id === cur ? 'on' : ''}" data-sec="${x.id}" href="#/${x.pages[0][0]}">${x.label}${x.id === 'home' && (h.openEvents + h.openOffers) ? ` <span class="badge yel">${h.openEvents + h.openOffers}</span>` : ''}</a>`).join('')}</div>
+  nav.innerHTML = `<div class="sections">${SECTIONS.map((x) => `<a class="sec ${x.id === cur ? 'on' : ''}" data-sec="${x.id}" href="#/${x.pages[0][0]}">${x.short ? `<span class="full">${x.label}</span><span class="short">${x.short}</span>` : x.label}${x.id === 'home' && (h.openEvents + h.openOffers) ? ` <span class="badge yel">${h.openEvents + h.openOffers}</span>` : ''}</a>`).join('')}</div>
     ${sec.pages.length > 1 ? `<div class="subnav">${sec.pages.filter(([r]) => r !== 'fantasy' || h.phase === 'FANTASY_DRAFT').map(([r, l]) => `<a class="${APP.route === r ? 'on' : ''}" href="#/${r}">${l}${badge(r)}</a>`).join('')}</div>` : ''}`;
 }
-function drawSide() { drawNav(); }
+function drawSide() { drawNav(); const on = $('#nav .subnav a.on'); if (on && on.parentElement.scrollWidth > on.parentElement.clientWidth) on.parentElement.scrollLeft = on.offsetLeft - 40; }
 
 // ---------------------------------------------------------------- events
 async function onClick(e) {
@@ -424,7 +428,26 @@ function initTooltips() {
     tip.style.left = `${x}px`; tip.style.top = `${y}px`;
   });
   document.addEventListener('mouseout', (e) => { if (cur && !cur.contains(e.relatedTarget)) hide(); });
-  document.addEventListener('click', hide, true);
+  // phones have no hover: press and hold anything to read its explanation
+  let timer = null, held = false;
+  const show = (el) => {
+    const t = el.getAttribute('title') || el.dataset.tip; if (!t) return;
+    hide(); cur = el; el.dataset.tip = t; el.removeAttribute('title');
+    tip.textContent = t; tip.style.display = 'block';
+    const r = el.getBoundingClientRect(); const w = tip.offsetWidth, hgt = tip.offsetHeight;
+    tip.style.left = `${Math.max(6, Math.min(window.innerWidth - w - 6, r.left + r.width / 2 - w / 2))}px`;
+    let y = r.top - hgt - 8; if (y < 6) y = r.bottom + 8; tip.style.top = `${y}px`;
+  };
+  document.addEventListener('touchstart', (e) => {
+    held = false; clearTimeout(timer);
+    const el = e.target.closest('[title], [data-tip]'); if (!el) return;
+    timer = setTimeout(() => { held = true; show(el); }, 450);
+  }, { passive: true });
+  const cancel = () => clearTimeout(timer);
+  document.addEventListener('touchmove', cancel, { passive: true });
+  document.addEventListener('touchend', cancel, { passive: true });
+  document.addEventListener('contextmenu', (e) => { if (held) e.preventDefault(); });
+  document.addEventListener('click', (e) => { if (held) { held = false; e.preventDefault(); e.stopPropagation(); return; } hide(); }, true);
   window.addEventListener('scroll', hide, true);
   window.addEventListener('hashchange', hide);
   APP.hideTip = hide;

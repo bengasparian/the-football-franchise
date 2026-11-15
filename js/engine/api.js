@@ -221,7 +221,10 @@ export function recap({ week = null, type = null, key = null } = {}, ctx = {}) {
   const regWeeks = [...new Set(played.filter((g) => g.type === 'REG').map((g) => g.w))].sort((a, b) => a - b);
   const poDone = PO_ROUNDS.filter((r) => played.some((g) => g.type === r));
   const options = [...regWeeks.map((w) => ({ k: `W${w}`, l: `Week ${w}` })), ...poDone.map((r) => ({ k: r, l: ROUND_LABEL[r] }))];
-  if (!key) key = type && type !== 'REG' ? type : week != null ? `W${week}` : (options.at(-1)?.k || null);
+  // by default show the latest finished week (a week that has only started, e.g. after Thursday night, is not a recap yet)
+  const complete = (w) => !Lg.games.some((g) => g.s === s && g.type === 'REG' && g.w === w && !g.played);
+  const lastFull = !poDone.length ? [...regWeeks].reverse().find(complete) : null;
+  if (!key) key = type && type !== 'REG' ? type : week != null ? `W${week}` : (lastFull != null ? `W${lastFull}` : options.at(-1)?.k || null);
   if (!key) return { week: null, key: null, games: [], options, weeks: regWeeks, byes: [], season: s, bracket: playoffBracket(), label: null };
   const isPO = PO_ROUNDS.includes(key);
   const w = isPO ? null : +key.slice(1);
@@ -775,7 +778,7 @@ export function draftState(_, ctx) {
   const order = orderIds.map((id) => Lg.picks.find((x) => x.id === id) || null);
   const log = (d?.log || []).map((x) => ({ ...x, name: `${Lg.players[x.pid]?.fn} ${Lg.players[x.pid]?.ln}`, pos: Lg.players[x.pid]?.pos, college: Lg.players[x.pid]?.college, abbr: T(x.tid).abbr, logo: T(x.tid).logo }));
   const upcoming = order.slice(d?.idx ?? 0, (d?.idx ?? 0) + 40).filter(Boolean).map((pk) => ({ id: pk.id, no: pk.no, rd: pk.rd, tid: pk.tid, abbr: T(pk.tid).abbr, logo: T(pk.tid).logo, mine: pk.tid === ctx.tid, via: pk.orig !== pk.tid ? T(pk.orig).abbr : null, comp: !!pk.comp }));
-  const myPicks = Lg.picks.filter((x) => x.tid === ctx.tid && x.s === s).map((k) => ({ id: k.id, label: pickLabel(k), no: k.no }));
+  const myPicks = Lg.picks.filter((x) => x.tid === ctx.tid && x.s === s).map((k) => ({ id: k.id, label: pickLabel(k), no: k.no, rd: k.rd }));
   return { clock: draftClock(), s, active: Lg.meta.phase === 'DRAFT', done: !!d?.done, idx: d?.idx ?? 0, onClock: upcoming[0] || null, userOnClock: !!userOnClock() && userOnClock().tid === ctx.tid, log: log.slice(-300).reverse(), upcoming, myPicks, orderSet: !!orderIds.length };
 }
 export function draftPick({ pid }, ctx) {

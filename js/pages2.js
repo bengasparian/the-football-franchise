@@ -90,7 +90,7 @@ PAGES2.fa = async () => {
   const isFA = f.phase === 'FREE_AGENCY';
   return `<div class="page-h"><h1>Free Agency</h1><span class="sub">${isFA ? `Day ${f.day} of the frenzy` : f.phase === 'POST_DRAFT' ? 'Undrafted free agents & leftovers' : 'Available players'} · Your cap space <b>${money(f.cap.space)}</b></span><div class="right">${posSel(faPos, 'faPos')}${isFA && net.mode !== 'guest' ? '<button class="btn pri" data-act="faDay">Next day ▶</button>' : ''}</div></div>
   ${isFA ? '<div class="card small muted">Stars take a few days and weigh every offer: money, guarantees, contender status, role, no-income-tax states, the coaching staff, and loyalty to their old team. Make offers, then advance days to see decisions.</div>' : ''}
-  <div class="grid g21"><div>${table({ id: 'fa', sort: { k: 'ovr', dir: 'desc' }, rows: f.rows, cols: [
+  <div class="grid g21"><div>${table({ id: 'fa', sort: { k: 'ask', dir: 'desc' }, rows: f.rows, cols: [
     { k: 'name', l: 'Player', f: (p) => pname(p, { sub: `${p.pos}${p.lastTeam ? ' · last: ' + p.lastTeam : p.udfa ? ' · UDFA' : ''}` }), sortv: (p) => p.ln },
     { k: 'pos', l: 'Pos' }, { k: 'age', l: 'Age', num: true }, { k: 'ovr', l: 'OVR', num: true, f: (p) => ovr(p.ovr) }, { k: 'pot', l: 'Pot', f: (p) => esc(p.pot || '—') },
     { k: 'ask', l: 'Asking', num: true, f: (p) => `${money(p.ask)} × ${p.askYears}` }, { k: 'offers', l: 'Offers', num: true, f: (p) => (p.offers ? `<b>${p.offers}</b>` : '0') },

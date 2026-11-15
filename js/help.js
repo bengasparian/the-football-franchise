@@ -2,7 +2,7 @@
 import { $, esc } from './ui.js';
 
 export const HELP = {
-  home: ['Franchise Hub', `Your home base. The big tile shows your next game; <b>Advance</b> (top right) plays the week or moves to the next phase of the NFL calendar.
+  home: ['Franchise Hub', `Your home base. The big tile shows your next game; <b>Advance</b> (top right) plays the week or moves to the next phase of the NFL calendar. Hover over anything (on a phone: press and hold it) to see what it means.
     Tiles jump to every part of the front office. "Needs your attention" shows dilemmas from players (contract talks, unhappy players, rookies pushing for snaps) and trade offers from AI teams. Your choices affect morale and chemistry.`],
   roster: ['Roster', `Everyone under contract with the team, by status: <b>Active</b> (max 53), <b>Practice Squad</b> (16 + 1 international), and <b>Injured Reserve</b>.
     OVR is the current rating. It changes with on-field production during the season and with age, work ethic and coaching in the offseason. The small +/- shows movement since the start of the season.
