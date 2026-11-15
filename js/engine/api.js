@@ -13,7 +13,7 @@ import { createLeague } from './league.js';
 import { ATTR_NAMES, ATTRS, OVR_W, potLabel, teamOvr, computeOvr, setOvr } from './ratings.js';
 import { personalityLabels } from './personality.js';
 import { marketValue, playerAsk, negotiate, signContract, teamCap, capSeason, futureCommitments, deadMoneyIfCut, releasePlayer, restructurePreview,
-  restructure, applyTag, tagValues, exerciseOption, fifthYearOptionValue, capHit, psDeal, minDeal, idealYears, negotiationOptions, makeContract, setCapAll, upgradeVoidYears } from './contracts.js';
+  restructure, applyTag, tagValues, exerciseOption, fifthYearOptionValue, capHit, psDeal, minDeal, idealYears, negotiationOptions, makeContract, setCapAll, upgradeVoidYears, contractPreview } from './contracts.js';
 import { autoDepth, setDepth, rosterCounts } from './roster.js';
 import { OFF_SCHEMES, DEF_SCHEMES, ROLES, teamScheme, teamFit, playerFit, fitLabel, resolveRoles, roleScore } from './schemes.js';
 import { placeOnIR, activateFromIR } from './injuries.js';
@@ -599,6 +599,21 @@ export function negOptions({ pid, mode }, ctx) {
   const o = negotiationOptions(pid, ctx.tid, { fa: p.tid === -1 });
   return { ...o, reasons: o.reasons.map(([l, d]) => ({ l, d })) };
 }
+const negOpts = (p, mode) => ({ type: mode === 'extend' ? 'extend' : 'sign', start: mode === 'extend' ? null : (p.tid >= 0 && L().meta.phase === 'RESIGN' ? L().meta.season + 1 : null) });
+// Live cap impact of an offer while negotiating (nothing is signed)
+export function negPreview({ pid, offer, mode }, ctx) {
+  const Lg = L();
+  const p = Lg.players[pid];
+  const tid = ctx.tid;
+  if (!Lg.meta.userTids.includes(tid)) throw new Error('No team');
+  if (p.tid >= 0) requireOwn(ctx, p.tid);
+  offer = { years: clamp(Math.round(offer.years) || 1, 1, 7), apy: Math.max(0, Math.round(offer.apy) || 0), gtd: Math.max(0, Math.round(offer.gtd) || 0) };
+  offer.gtd = Math.min(offer.gtd, offer.apy * offer.years);
+  const pv = contractPreview(pid, tid, offer, negOpts(p, mode));
+  // other free-agent offers you have out that would also need room this year
+  const pending = Lg.meta.phase === 'FREE_AGENCY' && Lg.fa?.offers ? Object.entries(Lg.fa.offers).filter(([id]) => id !== pid).flatMap(([id, os]) => os.filter((o) => o.tid === tid).map((o) => ({ pid: id, apy: o.apy }))) : [];
+  return { ...pv, pending: pending.length, pendingApy: pending.reduce((a, o) => a + o.apy, 0), capPct: pv.rows[0].cap ? pv.rows.find((r) => r.newHit > 0)?.newHit / capFor(pv.rows.find((r) => r.newHit > 0)?.s ?? capSeason()) : 0 };
+}
 export function negotiateP({ pid, offer, mode }, ctx) {
   const Lg = L();
   const p = Lg.players[pid];
@@ -607,15 +622,14 @@ export function negotiateP({ pid, offer, mode }, ctx) {
   offer = { years: clamp(Math.round(offer.years), 1, 7), apy: Math.round(offer.apy), gtd: Math.round(clamp(offer.gtd, 0, offer.apy * offer.years)) };
   if (p.tid === -1) return userOffer(tid, pid, offer);
   requireOwn(ctx, p.tid);
-  const s = capSeason();
-  const startS = mode === 'extend' ? p.contract.exp + 1 : s;
-  const cap = teamCap(tid, startS);
+  const opts = negOpts(p, mode);
+  // check the cap before talking: the deal has to fit this league year
+  const r0 = contractPreview(pid, tid, offer, opts).rows[0];
+  if (r0.after < 0 && r0.after < r0.before) return { error: `This deal doesn't fit under the ${r0.s} cap: his cap hit would be ${fmtMoney(r0.newHit)} and you'd be ${fmtMoney(-r0.after)} over. Lower the money or the guarantees, add years, or clear space first.` };
   const res = negotiate(pid, tid, offer, {});
   if (res.status === 'refused' && Lg.meta.phase === 'RESIGN' && mode === 'resign') (p.grudge ||= {})[tid] = { s: Lg.meta.season, why: 'Contract talks broke down' };
   if (res.status === 'accepted') {
-    const hitNow = mode === 'extend' ? 0 : offer.apy;
-    if (hitNow > cap.space + capHit(p, s)) return { status: 'counter', message: 'He would accept, but you do not have the cap space.', ev: res.ev };
-    signContract(pid, tid, offer, { type: mode === 'extend' ? 'extend' : 'sign', start: mode === 'extend' ? null : (Lg.meta.phase === 'RESIGN' ? Lg.meta.season + 1 : null) });
+    signContract(pid, tid, offer, opts);
     if (p.holdout) { p.holdout = false; news(`${p.fn} ${p.ln} ends his holdout after agreeing to a new deal.`, { type: 'holdout', tids: [tid], pids: [pid] }); }
   }
   return res;

@@ -442,10 +442,9 @@ export function negotiate(pid, tid, offer, ctx = {}) {
   return { status: 'counter', ev, counter, tone, moodLeft: st.mood, message: msg };
 }
 
-export function signContract(pid, tid, offer, { start = null, type = 'sign' } = {}) {
+// The contract a deal would produce (no changes to the league). Used to sign and to preview the cap impact.
+export function buildContract(p, tid, offer, { start = null, type = 'sign' } = {}) {
   const Lg = G.L;
-  const p = Lg.players[pid];
-  const t = Lg.teams[tid];
   // once the season is over, every new deal starts with the next league year
   const s = start ?? capSeason();
   const maxApy = capFor(s) * ({ QB: 0.228, EDGE: 0.17, WR: 0.15, DT: 0.135 }[p.pos] ?? 0.13);
@@ -457,19 +456,62 @@ export function signContract(pid, tid, offer, { start = null, type = 'sign' } = 
     if (left + offer.years > 6) { const yrs = Math.max(1, 6 - left); offer = { ...offer, years: yrs, gtd: Math.min(offer.gtd, Math.round(offer.apy * yrs)) }; }
     const newC = makeContract({ start: p.contract.exp + 1, years: offer.years, apy: offer.apy, gtd: offer.gtd });
     // signing bonus of the extension prorates across remaining + new years (max 5)
-    const keep = p.contract.years.filter((y) => y.s >= capSeason());
+    const keep = p.contract.years.filter((y) => y.s >= capSeason()).map((y) => ({ ...y }));
     const allYears = [...keep, ...newC.years];
     const sb = newC.years.reduce((a, y) => a + y.bonus, 0);
     newC.years.forEach((y) => { y.bonus = 0; });
     const n = Math.min(5, allYears.length);
     allYears.slice(0, n).forEach((y) => { y.bonus += Math.round(sb / n); });
-    c = { ...newC, years: allYears, exp: allYears[allYears.length - 1].s, signed: Lg.meta.season, extendedFrom: p.contract.apy };
+    c = { ...newC, years: allYears, exp: allYears[allYears.length - 1].s, signed: Lg.meta.season, extendedFrom: p.contract.apy, sb };
     spreadVoid(c, p.contract.vd, newC.years);
   } else {
     c = makeContract({ start: s, years: offer.years, apy: offer.apy, gtd: offer.gtd });
+    c.sb = c.years.reduce((a, y) => a + y.bonus, 0);
     // re-signing your own player before his old deal voids keeps that bonus money spread out instead of hitting at once
     if (p.tid === tid && p.contract?.vd && p.contract.exp < s) spreadVoid(c, p.contract.vd, c.years);
   }
+  return { c, offer };
+}
+
+// What a deal would do to the team's cap, season by season: his cap hit and the team's cap space before and after
+export function contractPreview(pid, tid, offer, opts = {}) {
+  const Lg = G.L;
+  const p = Lg.players[pid];
+  const { c, offer: adj } = buildContract(p, tid, offer, opts);
+  const s0 = capSeason();
+  const last = Math.min(s0 + 6, Math.max(s0 + 4, c.exp));
+  const seasons = []; for (let s = s0; s <= last; s++) seasons.push(s);
+  const mineNow = p.tid === tid;
+  const before = seasons.map((s) => teamCap(tid, s));
+  const oldHits = seasons.map((s) => (mineNow ? capHit(p, s) : 0));
+  const oldVoid = mineNow && p.contract?.vd ? p.contract.vd : 0;
+  const saved = { tid: p.tid, status: p.status, contract: p.contract };
+  let after, newHits;
+  try {
+    p.tid = tid; if (p.status !== 'IR') p.status = 'ACT'; p.contract = c;
+    after = seasons.map((s) => teamCap(tid, s));
+    newHits = seasons.map((s) => capHit(p, s));
+  } finally { Object.assign(p, saved); }
+  const rows = seasons.map((s, i) => {
+    const y = c.years.find((x) => x.s === s);
+    return { s, cap: after[i].cap, oldHit: oldHits[i], newHit: newHits[i], base: y?.base || 0, bonus: y?.bonus || 0, gtd: y?.gtd || 0,
+      before: before[i].space, after: after[i].space, projected: s > Lg.meta.season };
+  });
+  // dead money if he's released before the second season of the deal
+  const s1 = c.years.find((y) => y.s > s0)?.s;
+  const deadNext = s1 ? c.years.filter((y) => y.s >= s1).reduce((a, y) => a + y.bonus + y.gtd, 0) : 0;
+  return { rows, contract: { years: c.years.length, newYears: adj.years, apy: adj.apy, gtd: adj.gtd, sb: c.sb || 0, voidCarried: c.voidCarried || 0, exp: c.exp, start: c.years[0]?.s },
+    adjusted: adj.apy !== offer.apy || adj.years !== offer.years, offer: adj, oldVoid, deadNext, s1 };
+}
+
+export function signContract(pid, tid, offer, { start = null, type = 'sign' } = {}) {
+  const Lg = G.L;
+  const p = Lg.players[pid];
+  const t = Lg.teams[tid];
+  const s = start ?? capSeason();
+  const built = buildContract(p, tid, offer, { start, type });
+  const c = built.c; offer = built.offer;
+  delete c.sb;
   const wasTeam = p.tid;
   if (p.tid !== tid) { removeFromDepth(p); p.yrsWithTeam = 0; }
   p.tid = tid; p.status = p.status === 'IR' ? 'IR' : 'ACT'; p.contract = c; p.holdout = false; p.waiver = null;

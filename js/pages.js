@@ -312,11 +312,49 @@ ACTIONS.negotiate = async (el) => {
     <div class="grid g3"><div><div class="small muted">Years</div><input type="number" id="ngY" min="1" max="7" value="${pr.years}" title="Contract length. Young players prefer shorter deals; veterans want security."></div><div><div class="small muted">Average per year ($M)</div><input type="number" id="ngA" step="0.1" min="0.8" value="${Math.round(pr.apy / 1e5) / 10}" title="Average annual value"></div><div><div class="small muted">Guaranteed total ($M)</div><input type="number" id="ngG" step="0.5" min="0" value="${Math.round(pr.gtd / 1e5) / 10}" title="Fully guaranteed money. Money-motivated players weigh this heavily."></div></div>
     <div class="small muted" style="margin-top:8px">Total value: <b id="ngT"></b>. The agent opens high and comes down when you negotiate in good faith. Lowballs sour the mood, and every round costs patience.</div>
     <div class="small" style="margin-top:6px">Patience ${meter(Math.max(0, o.mood * 100))}</div>
+    <div id="ngCap" class="ngcap"><div class="tiny muted">Working out the cap impact…</div></div>
     <div id="ngMsg" style="margin:12px 0"></div>
     <div class="row"><button class="btn pri" data-act="ngSubmit" data-pid="${esc(p.pid)}" data-mode="${mode}">Submit offer</button><button class="btn ghost" data-act="closeModal">Close</button></div>`, { narrow: true });
-  const upd = () => { $('#ngT').textContent = money(+$('#ngY').value * +$('#ngA').value * 1e6); };
-  ['ngY', 'ngA'].forEach((i) => $('#' + i).addEventListener('input', upd)); upd();
+  let tm = null, seq = 0;
+  const upd = () => {
+    $('#ngT').textContent = money(+$('#ngY').value * +$('#ngA').value * 1e6);
+    clearTimeout(tm);
+    tm = setTimeout(async () => {
+      const my = ++seq;
+      const offer = { years: +$('#ngY').value, apy: +$('#ngA').value * 1e6, gtd: +$('#ngG').value * 1e6 };
+      try { const pv = await call('negPreview', { pid: p.pid, offer, mode }); if (my === seq && $('#ngCap')) $('#ngCap').innerHTML = capImpact(pv, mode, p); } catch { /* modal closed */ }
+    }, 160);
+  };
+  ['ngY', 'ngA', 'ngG'].forEach((i) => $('#' + i).addEventListener('input', upd)); upd();
 };
+// How an offer changes his cap hit and your cap space, year by year
+function capImpact(v, mode, p) {
+  const sp = (x) => `<b class="${x < 0 ? 'bad' : ''}">${money(x)}</b>`;
+  const first = v.rows.find((r) => r.newHit > 0) || v.rows[0];
+  const r0 = v.rows[0];
+  const k = v.contract;
+  const notes = [];
+  notes.push(`${mode === 'extend' ? 'New money' : 'Signing bonus'}: <b>${money(k.sb)}</b>${k.sb ? `, spread evenly over ${Math.min(5, k.years)} season${Math.min(5, k.years) > 1 ? 's' : ''} of cap hits` : ''}.`);
+  if (mode === 'extend') notes.push(`The new years start in <b>${k.exp - k.newYears + 1}</b>. The extension's bonus also spreads into the seasons left on his current deal, so this year's hit changes too.`);
+  if (k.voidCarried) notes.push(`Includes <b>${money(k.voidCarried)}</b> of void-year money from his old deal, now spread over the new years instead of hitting at once.`);
+  else if (v.oldVoid && mode === 'resign') notes.push(`Letting him walk would put <b>${money(v.oldVoid)}</b> of void-year money on your cap as dead money.`);
+  if (v.deadNext > 0 && v.s1) notes.push(`If you release him before ${v.s1}: about <b>${money(v.deadNext)}</b> in dead money (remaining bonus + guarantees).`);
+  if (v.adjusted) notes.push(`<span class="warn">League limits change this offer to ${v.offer.years} yrs × ${money(v.offer.apy)}.</span>`);
+  if (v.pending) notes.push(`You have ${v.pending} other free-agent offer${v.pending > 1 ? 's' : ''} out (about ${money(v.pendingApy)}/yr). If they sign first they use this space too.`);
+  const overNow = r0.after < 0 && r0.after < r0.before;
+  const overLater = v.rows.filter((r, i) => i > 0 && r.after < 0 && r.after < r.before);
+  const warn = overNow ? `<div class="warnbox small">This deal does not fit under the ${r0.s} cap (${money(-r0.after)} over). Lower the money or the guarantees, add years, or clear space first.</div>`
+    : overLater.length ? `<div class="warnbox small">You'd be over the projected cap in ${overLater.map((r) => r.s).join(', ')} unless you clear space before then (cut, trade or restructure).</div>` : '';
+  const hasOld = v.rows.some((r) => r.oldHit > 0);
+  return `<h3 class="ngcap-h">Cap impact</h3>
+    <div class="small" style="margin-bottom:6px">${first.s} cap hit <b>${money(first.newHit)}</b> (${((first.newHit / first.cap) * 100).toFixed(1)}% of the cap)${hasOld ? `, was ${money(v.rows.find((r) => r.s === first.s)?.oldHit || 0)}` : ''}.</div>
+    ${warn}
+    <div class="tbl-wrap"><table class="tbl-compact"><thead><tr><th>Season</th>${hasOld ? '<th class="num">Current deal</th>' : ''}<th class="num" title="Base salary + prorated bonus">His cap hit</th><th class="num">Cap space now</th><th class="num">With this deal</th></tr></thead><tbody>
+    ${v.rows.map((r) => `<tr><td>${r.s}${r.projected ? '<span class="muted" title="Projected: future caps are estimates and assume no other moves">*</span>' : ''}</td>${hasOld ? `<td class="num muted">${r.oldHit ? money(r.oldHit) : '—'}</td>` : ''}<td class="num" title="Base ${money(r.base)} + bonus ${money(r.bonus)}${r.gtd ? `, ${money(r.gtd)} guaranteed` : ''}">${r.newHit ? `<b>${money(r.newHit)}</b>${r.gtd ? ' <span class="tiny muted">g</span>' : ''}` : '—'}</td><td class="num">${sp(r.before)}</td><td class="num">${sp(r.after)}${r.after !== r.before ? ` <span class="tiny ${r.after < r.before ? 'bad' : 'good'}">${r.after < r.before ? '−' : '+'}${money(Math.abs(r.after - r.before))}</span>` : ''}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="tiny muted" style="margin-top:6px">${notes.join(' ')}</div>
+    <div class="tiny muted" style="margin-top:4px">* Projected: future caps are estimates and assume no other moves. Unused space carries over, so money spent this year also lowers next year's room. In the offseason only your top 51 cap hits count. g = guaranteed.</div>`;
+}
 ACTIONS.ngPreset = (el) => { $('#ngY').value = el.dataset.y; $('#ngA').value = Math.round(+el.dataset.a / 1e5) / 10; $('#ngG').value = Math.round(+el.dataset.g / 1e5) / 10; $('#ngY').dispatchEvent(new Event('input')); };
 ACTIONS.ngSubmit = async (el) => {
   const offer = { years: +$('#ngY').value, apy: +$('#ngA').value * 1e6, gtd: +$('#ngG').value * 1e6 };

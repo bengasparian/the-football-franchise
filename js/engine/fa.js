@@ -1,6 +1,6 @@
 // Free agency: legal tampering, day-by-day bidding wars, player decision factors, in-season signings.
 import { G, rnd, gauss, clamp, age, news, transaction, capFor, minSalary } from './core.js';
-import { marketValue, playerAsk, signContract, teamCap, capSeason, idealYears, idealGtdPct, minDeal } from './contracts.js';
+import { marketValue, playerAsk, signContract, teamCap, capSeason, idealYears, idealGtdPct, minDeal, contractPreview } from './contracts.js';
 import { rosterStrength } from './league.js';
 import { teamMode } from './trade.js';
 
@@ -75,9 +75,9 @@ export function userOffer(tid, pid, offer) {
   const p = Lg.players[pid];
   if (!p || p.tid !== -1) return { error: 'Player is not a free agent.' };
   const cs = capSeason();
-  const cap = teamCap(tid, cs);
-  const hit1 = offer.apy * 0.9;
-  if (cap.space < hit1) return { error: `Not enough cap space (${Math.round(cap.space / 1e5) / 10}M available).` };
+  // the deal's real first-year cap hit (base + prorated bonus), not just the average
+  const r0 = contractPreview(pid, tid, offer).rows[0];
+  if (r0.after < 0) return { error: `Not enough cap space: his ${cs} cap hit would be ${Math.round(r0.newHit / 1e5) / 10}M and you have ${Math.round(r0.before / 1e5) / 10}M available.` };
   const ask = playerAsk(p, tid, { fa: true });
   if (offer.apy < minSalary(p.exp ?? 0, cs)) return { error: 'Offer is below the league minimum.' };
   // during the offseason frenzy offers are collected and decided over days; in-season decisions are immediate
